@@ -47,6 +47,19 @@
 	</array>
 	<key>UIViewControllerBasedStatusBarAppearance</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLName</key>
+			<string>com.homilivo.app</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>homilivo</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSAppTransportSecurity</key>
 <dict>
     <key>NSAllowsArbitraryLoadsInWebContent</key>
@@ -54,5 +67,7 @@
     <key>NSAllowsLocalNetworking</key>
     <true/>
 </dict>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Homilivo uses your location to place your property accurately on the map and to help you find nearby listings.</string>
 </dict>
 </plist>

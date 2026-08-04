@@ -1,6 +1,6 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
-import { useAppSelector } from '../../src/store/hooks';
+import { useAppSelector } from '../../store/hooks';
 export function AgentRoute({
   children
 
@@ -26,9 +26,12 @@ export function AgentRoute({
     return <Navigate to="/auth/login" replace />;
   }
   // Check for AGENT role (case-insensitive)
-  const isAgent = user.role === 'AGENT' || user.role === 'agent';
+  const normalizedRole = user.role?.toUpperCase();
+  const isAgent = normalizedRole === 'AGENT';
+  
   if (!isAgent) {
     return <Navigate to="/" replace />;
   }
+
   return <>{children}</>;
 }

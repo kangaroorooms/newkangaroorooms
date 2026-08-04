@@ -1,13 +1,15 @@
 import React, { useEffect, useState, lazy } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, MapPin, IndianRupee, Home, CheckCircle, XCircle, AlertTriangle, Ban, User, Clock, Shield, Star, Tag, Landmark, Calendar, RefreshCw, Wifi, Phone, Mail, Activity, TrendingUp, Images } from 'lucide-react';
-import { useAppDispatch, useAppSelector } from '../../src/store/hooks';
-import { fetchAllProperties, updatePropertyStatus, requestPropertyCorrection } from '../../src/store/slices/admin.slice';
-import { fetchAllUsers } from '../../src/store/slices/admin.slice';
+import { ArrowLeft, MapPin, IndianRupee, Home, CheckCircle, XCircle, AlertTriangle, Ban, User, Clock, Shield, Star, Tag, Landmark, Calendar, RefreshCw, Wifi, Phone, Mail, Activity, TrendingUp, Images, Edit, MessageCircle } from 'lucide-react';
+import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { fetchAllProperties, updatePropertyStatus, requestPropertyCorrection } from '../../store/slices/admin.slice';
+import { fetchAllUsers } from '../../store/slices/admin.slice';
 import { RequestCorrectionModal } from '../../components/admin/RequestCorrectionModal';
-import { PropertyStatus } from '../../src/types/admin.types';
-import { FeedbackReason, FeedbackSeverity } from '../../src/types/api.types';
+import { EditPropertyModal } from '../../components/EditPropertyModal';
+import { PropertyStatus } from '../../types/admin.types';
+import { FeedbackReason, FeedbackSeverity } from '../../types/api.types';
 import { Button } from '../../components/ui/Button';
+import { buildPropertyWhatsappMessage, generateWhatsAppUrl, isValidWhatsAppPhone } from '../../utils/whatsappMessage';
 // ─── Status helpers ────────────────────────────────────────────────────────────
 const STATUS_STYLES: Record<string, string> = {
   approved: 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 border border-green-200 dark:border-green-800',
@@ -82,8 +84,7 @@ export function AdminPropertyDetail() {
   // ── Gallery state ──────────────────────────────────────────────────────────
   const [selectedImage, setSelectedImage] = useState<string>('');
   // ── Action state ───────────────────────────────────────────────────────────
-  const [isCorrectionModalOpen, setIsCorrectionModalOpen] = useState(false);
-  const [actionLoading, setActionLoading] = useState<string | null>(null);
+  const [isCorrectionModalOpen, setIsCorrectionModalOpen] = useState(false);  const [isEditOpen, setIsEditOpen] = useState(false);  const [actionLoading, setActionLoading] = useState<string | null>(null);
   // ── Fetch if missing ───────────────────────────────────────────────────────
   useEffect(() => {
     if (!property && !loading) {
@@ -140,9 +141,7 @@ export function AdminPropertyDetail() {
         status,
         reason
       })).unwrap();
-    } catch (error) {
-      console.error('Failed to update status:', error);
-    } finally {
+    } catch {} finally {
       setActionLoading(null);
     }
   };
@@ -157,11 +156,19 @@ export function AdminPropertyDetail() {
         severity
       })).unwrap();
       setIsCorrectionModalOpen(false);
-    } catch (error) {
-      console.error('Failed to request correction:', error);
-    } finally {
+    } catch {} finally {
       setActionLoading(null);
     }
+  };
+  const handleWhatsApp = () => {
+    if (!owner?.phone || !isValidWhatsAppPhone(owner.phone)) return;
+    const message = buildPropertyWhatsappMessage({
+      name: owner.name || 'Owner',
+      title: property.title,
+      propertyId: property.id,
+    });
+    const url = generateWhatsAppUrl(owner.phone, message);
+    window.open(url, '_blank', 'noopener,noreferrer');
   };
   const currentStatus = property.reviewStatus || (property as any).status || 'pending';
   const allImages = property.images ?? [];
@@ -186,7 +193,7 @@ export function AdminPropertyDetail() {
                   Properties
                 </span>
                 <span>/</span>
-                <span className="text-navy dark:text-white truncate max-w-[160px]">
+                <span className="text-navy dark:text-white truncate max-w-[120px] sm:max-w-[160px] min-w-0">
                   {property.title}
                 </span>
               </div>
@@ -206,7 +213,7 @@ export function AdminPropertyDetail() {
         </div>
 
         {/* ── Main grid ───────────────────────────────────────────────────── */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 items-start">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 items-start">
           {/* ── LEFT COLUMN ─────────────────────────────────────────────── */}
           <div className="lg:col-span-2 space-y-6">
             {/* Image Gallery */}
@@ -394,6 +401,16 @@ export function AdminPropertyDetail() {
 
 
               <div className="space-y-2.5">
+                <Button fullWidth size="sm" className="!bg-navy hover:!bg-navy/90 !text-white border-none justify-start" onClick={() => setIsEditOpen(true)} loading={false}>
+
+                    <Edit className="w-4 h-4 mr-2" />
+                    Edit Property
+                  </Button>
+                {isValidWhatsAppPhone(owner?.phone) && <Button fullWidth size="sm" className="!bg-green-600 hover:!bg-green-700 !text-white border-none justify-start" onClick={handleWhatsApp}>
+
+                    <MessageCircle className="w-4 h-4 mr-2" />
+                    Send WhatsApp
+                  </Button>}
                 {currentStatus !== 'approved' && <Button fullWidth size="sm" className="!bg-green-600 hover:!bg-green-700 !text-white border-none justify-start" onClick={() => handleStatusUpdate('approved')} loading={actionLoading === 'approved'}>
 
                     <CheckCircle className="w-4 h-4 mr-2" />
@@ -535,6 +552,18 @@ export function AdminPropertyDetail() {
 
       {/* Correction Modal */}
       <RequestCorrectionModal isOpen={isCorrectionModalOpen} onClose={() => setIsCorrectionModalOpen(false)} onConfirm={handleRequestCorrection} propertyTitle={property.title} />
+
+      {/* Edit Property Modal */}
+      <EditPropertyModal
+        isOpen={isEditOpen}
+        onClose={() => setIsEditOpen(false)}
+        room={property}
+        isAdmin={true}
+        onEditComplete={() => {
+          setIsEditOpen(false);
+          dispatch(fetchAllProperties({}));
+        }}
+      />
 
     </div>;
 }

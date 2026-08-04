@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { X, Search, Home, Check } from 'lucide-react';
-import { useAppDispatch, useAppSelector } from '../../src/store/hooks';
-import { fetchAllProperties } from '../../src/store/slices/admin.slice';
+import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { fetchAllProperties } from '../../store/slices/admin.slice';
 interface AssignPropertyModalProps {
   isOpen: boolean;
   onClose: () => void;

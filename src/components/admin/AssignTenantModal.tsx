@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { X, Search, User, Check } from 'lucide-react';
-import { useAppDispatch, useAppSelector } from '../../src/store/hooks';
-import { fetchAllUsers } from '../../src/store/slices/admin.slice';
+import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { fetchAllUsers } from '../../store/slices/admin.slice';
+import { Role } from '../../types/api.types';
 interface AssignTenantModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -27,7 +28,7 @@ export function AssignTenantModal({
   useEffect(() => {
     if (isOpen) {
       dispatch(fetchAllUsers({
-        role: 'tenant'
+        role: Role.TENANT
       }));
       setSearchTerm('');
       setSelectedTenantId(null);
@@ -35,19 +36,28 @@ export function AssignTenantModal({
     }
   }, [isOpen, dispatch]);
   if (!isOpen) return null;
-  const filteredTenants = users.filter((u) => u.role === 'tenant' && (u.name.toLowerCase().includes(searchTerm.toLowerCase()) || u.email.toLowerCase().includes(searchTerm.toLowerCase())));
-  return <div className="fixed inset-0 bg-navy/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+  const filteredTenants = users.filter((u) => u.role === Role.TENANT && (u.name.toLowerCase().includes(searchTerm.toLowerCase()) || u.email.toLowerCase().includes(searchTerm.toLowerCase())));
+  return <div
+    className="fixed inset-0 bg-navy/50 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="assign-tenant-title"
+  >
       <div className="bg-white dark:bg-slate-800 rounded-2xl max-w-2xl w-full shadow-2xl animate-in fade-in zoom-in duration-200 flex flex-col max-h-[90vh]">
         <div className="p-6 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center">
           <div>
-            <h3 className="text-xl font-bold text-navy dark:text-white font-playfair">
+            <h3 id="assign-tenant-title" className="text-xl font-bold text-navy dark:text-white font-playfair">
               Assign Tenant
             </h3>
             <p className="text-slate-500 dark:text-slate-400 text-sm">
               Assigning to {agentName}
             </p>
           </div>
-          <button onClick={onClose} className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-colors">
+          <button
+            onClick={onClose}
+            aria-label="Close assign tenant modal"
+            className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold"
+          >
 
             <X className="w-5 h-5 text-slate-500 dark:text-slate-400" />
           </button>

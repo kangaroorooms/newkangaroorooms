@@ -1,202 +1,514 @@
-import React, { useEffect } from "react";
-import { X, Filter } from "lucide-react";
-import { useAppDispatch, useAppSelector } from "../src/store/hooks";
-import { loadCities, loadAmenities } from "../src/store/slices/metadata.slice";
+import { useEffect, useState, memo, useMemo } from "react";
+import { createPortal } from "react-dom";
+import {
+    X,
+    SlidersHorizontal,
+} from "lucide-react";
+import { useAppSelector, useAppDispatch } from "../store/hooks";
+import {
+  ROOM_TYPE_OPTIONS,
+  GENDER_PREFERENCE_UI_OPTIONS,
+  IDEAL_FOR_OPTIONS,
+  BUDGET_RANGES,
+} from "../constants/filterOptions";
+import { loadLocations } from "../store/slices/metadata.slice";
+import MultiSelectAreaPicker from "./MultiSelectAreaPicker";
+
 interface FilterSidebarProps {
   filters: any;
   setFilters: (filters: any) => void;
+  onApplyFilters: (filters: any) => void;
   isOpen: boolean;
   onClose: () => void;
+  isLoading?: boolean;
+  resultCount?: number;
 }
-const MAX_RENT = 500000; // industry upper bound
+
+const MAX_RENT = 500_000;
 const MIN_RENT = 0;
-export function FilterSidebar({
+
+const normalizeCityValue = (name: string) => name.trim().toLowerCase();
+
+/**
+ * Custom hook to detect mobile viewport
+ * Returns true if screen width < 1024px (lg breakpoint)
+ */
+function useMobileViewport() {
+  const [isMobile, setIsMobile] = useState(() =>
+    typeof window !== "undefined" ? window.innerWidth < 1024 : true,
+  );
+
+  useEffect(() => {
+    let resizeTimer: ReturnType<typeof setTimeout>;
+
+    const handleResize = () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        setIsMobile(window.innerWidth < 1024);
+      }, 150);
+    };
+
+    window.addEventListener("resize", handleResize);
+    return () => {
+      clearTimeout(resizeTimer);
+      window.removeEventListener("resize", handleResize);
+    };
+  }, []);
+
+  return isMobile;
+}
+
+function FilterSidebarComponent({
   filters,
   setFilters,
+  onApplyFilters,
   isOpen,
-  onClose
+  onClose,
+  isLoading = false,
+  resultCount = 0,
 }: FilterSidebarProps) {
+  const { cities, locationsByCity, locationsLoading } = useAppSelector((s) => s.metadata);
   const dispatch = useAppDispatch();
-  const {
-    cities,
-    amenities
-  } = useAppSelector((state) => state.metadata);
+  const [local, setLocal] = useState(filters);
+  const isMobile = useMobileViewport();
+
+  useEffect(() => setLocal(filters), [filters]);
+
+  // ✅ NEW: Fetch locations when city changes
   useEffect(() => {
-    if (cities.length === 0) {
-      dispatch(loadCities());
-    }
-    if (amenities.length === 0) {
-      dispatch(loadAmenities());
-    }
-  }, [dispatch, cities.length, amenities.length]);
-  // Lock body scroll when mobile menu is open
-  // useEffect(() => {
-  //   if (isOpen) {
-  //     document.body.style.overflow = 'hidden';
-  //   } else {
-  //     document.body.style.overflow = '';
-  //   }
-  //   return () => {
-  //     document.body.style.overflow = '';
-  //   };
-  // }, [isOpen]);
-  useEffect(() => {
-    if (isOpen) {
-      document.body.style.overflow = "hidden";
+    if (local.city) {
+      dispatch(loadLocations(local.city));
     } else {
-      document.body.style.overflow = "";
+      // Clear location when city is cleared
+      setLocal((prev: any) => ({ ...prev, location: "", areaId: "", areaIds: [] }));
     }
+  }, [local.city, dispatch]);
+
+  // ✅ NEW: Clear location when city changes
+  const handleCityChange = (value: string) => {
+    set("city", value);
+    set("areaId", "");
+    set("areaIds", []);
+    set("location", ""); // Reset location when city changes
+  };
+
+  /* Lock body scroll when mobile drawer is open */
+  useEffect(() => {
+    if (!isMobile) return; // Only for mobile
+    document.body.style.overflow = isOpen ? "hidden" : "";
     return () => {
       document.body.style.overflow = "";
     };
-  }, [isOpen]);
-  const handleChange = (key: string, value: any) => {
-    setFilters({
-      ...filters,
-      [key]: value
-    });
+  }, [isOpen, isMobile]);
+
+  const activeCount = (() => {
+    let n = 0;
+    if (local.city) n++;
+    if (local.areaIds?.length || local.areaId || local.location) n++;
+    if (local.minPrice || local.maxPrice) n++;
+    if (local.roomType) n++;
+    if (local.roomTypes?.length) n++;
+    if (local.genderPreference && local.genderPreference !== "ANY") n++;
+    if (local.idealFor?.length) n++;
+    return n;
+  })();
+
+  const normalizedAreaOptions = useMemo(() => {
+    const cityAreas = locationsByCity[local.city] || [];
+    return cityAreas
+      .filter((loc) => typeof loc?.id === "string")
+      .map((loc) => ({
+        id: loc.id as string,
+        name: loc.name,
+        count: typeof loc.count === "number" ? loc.count : undefined,
+      }));
+  }, [locationsByCity, local.city]);
+
+  const set = (key: string, value: any) =>
+    setLocal((p: any) => ({ ...p, [key]: value }));
+
+  const toggleInArray = (key: string, value: string) => {
+    const arr: string[] = local[key] || [];
+    set(
+      key,
+      arr.includes(value) ? arr.filter((v) => v !== value) : [...arr, value],
+    );
   };
-  const toggleAmenity = (amenity: string) => {
-    const current = filters.amenities || [];
-    const updated = current.includes(amenity) ? current.filter((a: string) => a !== amenity) : [...current, amenity];
-    handleChange("amenities", updated);
+
+  const handlePrice = (key: "minPrice" | "maxPrice", raw: string) => {
+    const n = Math.max(MIN_RENT, Math.min(Number(raw) || 0, MAX_RENT));
+    const u = { ...local, [key]: n };
+    if (key === "minPrice" && local.maxPrice && n > local.maxPrice)
+      u.maxPrice = n;
+    if (key === "maxPrice" && local.minPrice && n < local.minPrice)
+      u.minPrice = n;
+    setLocal(u);
   };
-  return <>
-      {/* Overlay for mobile */}
-      <div className={`fixed inset-0 bg-black/50 backdrop-blur-sm z-40 lg:hidden transition-opacity duration-300 ${isOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`} onClick={onClose} aria-hidden="true" />
 
-      <aside style={{
-      paddingTop: "env(safe-area-inset-top)",
-      paddingBottom: "env(safe-area-inset-bottom)"
-    }} className={`
-    fixed inset-y-0 left-0 z-50 w-full max-w-[300px]
-    bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800
-    shadow-2xl transform transition-transform duration-300 ease-in-out
-    lg:translate-x-0 lg:static lg:shadow-none lg:z-0 lg:h-auto lg:block
-    ${isOpen ? "translate-x-0" : "-translate-x-full"}
-  `}>
-        <div className="flex flex-col h-full">
-          {/* Header */}
-          <div className="pt-6 px-5 pb-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Filter className="w-5 h-5 text-gold" />
-              <h2 className="text-lg font-bold text-navy dark:text-white font-playfair">
-                Filters
-              </h2>
-            </div>
-            <button onClick={onClose} className="lg:hidden p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full text-slate-500 dark:text-slate-400 transition-colors" aria-label="Close filters">
-              <X className="w-5 h-5" />
+  const applyFilters = () => {
+    setFilters(local);
+    onApplyFilters(local);
+    onClose();
+  };
+
+  const clearAll = () => {
+    const blank = {
+      city: "",
+      areaId: "",
+      areaIds: [],
+      location: "",
+      minPrice: "",
+      maxPrice: "",
+      roomType: "",
+      roomTypes: [],
+      genderPreference: "",
+      idealFor: [],
+    };
+    setLocal(blank);
+    setFilters(blank);
+    onApplyFilters(blank);
+  };
+
+  /* ── Shared class helpers ── */
+  const filterBtn = (active: boolean) =>
+    `py-2.5 px-3 rounded-xl border-2 font-medium text-sm transition-all cursor-pointer text-left ${
+      active
+        ? "border-[rgba(212,175,55,0.7)] bg-[rgba(212,175,55,0.12)] text-[rgba(212,175,55,0.95)]"
+        : "border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 text-slate-600 dark:text-slate-300 hover:border-[rgba(212,175,55,0.4)]"
+    }`;
+
+  const sectionLabel =
+    "mb-3 block text-[11px] font-bold uppercase tracking-widest text-slate-400 dark:text-slate-500";
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     FILTER CONTENT COMPONENT (shared between mobile & desktop)
+     ═══════════════════════════════════════════════════════════════════════════ */
+  const FilterContent = useMemo(
+    () => (
+      <>
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100 dark:border-slate-800/80 flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <SlidersHorizontal
+              className="h-4 w-4"
+              style={{ color: "rgba(212,175,55,0.9)" }}
+            />
+            <h2
+              className="text-base font-bold text-slate-800 dark:text-white tracking-tight"
+              style={{ fontFamily: "'Playfair Display', serif" }}
+            >
+              Filters
+            </h2>
+            {activeCount > 0 && (
+              <span
+                className="inline-flex items-center justify-center w-5 h-5 rounded-full text-xs font-bold text-white"
+                style={{ background: "rgba(212,175,55,0.9)" }}
+              >
+                {activeCount}
+              </span>
+            )}
+          </div>
+          {/* Close button only on mobile */}
+          {isMobile && (
+            <button
+              onClick={onClose}
+              aria-label="Close filters"
+              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 transition-colors"
+            >
+              <X className="h-4 w-4" />
             </button>
-          </div>
-
-          {/* Scrollable Content */}
-          <div className="flex-1 overflow-y-auto p-5 space-y-8">
-            {/* City */}
-            <div>
-              <h3 className="font-semibold text-sm text-navy dark:text-white mb-3 uppercase tracking-wider">
-                Location
-              </h3>
-              <div className="relative">
-                <select value={filters.city || ""} onChange={(e) => handleChange("city", e.target.value)} className="w-full p-3 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 focus:border-gold focus:ring-2 focus:ring-gold/20 outline-none transition-all appearance-none cursor-pointer">
-                  <option value="">All Cities</option>
-                  {cities.map((c) => <option key={c.id} value={c.id}>
-                      {c.name}
-                    </option>)}
-                </select>
-                <div className="absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none text-slate-400">
-                  <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="m6 9 6 6 6-6" />
-                  </svg>
-                </div>
-              </div>
-            </div>
-
-            {/* Price Range */}
-            <div>
-              <h3 className="font-semibold text-sm text-navy dark:text-white mb-3 uppercase tracking-wider">
-                Price Range (₹)
-              </h3>
-              <div className="flex gap-3 items-center">
-                <input type="number" placeholder="Min" value={filters.minPrice || ""} onChange={(e) => handleChange("minPrice", e.target.value)} className="w-full p-3 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 outline-none focus:border-gold focus:ring-2 focus:ring-gold/20 transition-all placeholder:text-slate-400" />
-
-                <span className="text-slate-400">-</span>
-                <input type="number" placeholder="Max" value={filters.maxPrice || ""} onChange={(e) => handleChange("maxPrice", e.target.value)} className="w-full p-3 bg-slate-50 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 outline-none focus:border-gold focus:ring-2 focus:ring-gold/20 transition-all placeholder:text-slate-400" />
-              </div>
-            </div>
-
-            {/* Room Type */}
-            <div>
-              <h3 className="font-semibold text-sm text-navy dark:text-white mb-3 uppercase tracking-wider">
-                Room Type
-              </h3>
-              <div className="space-y-2.5">
-                {["Single", "Shared", "PG", "1BHK", "2BHK"].map((type) => <label key={type} className="flex items-center gap-3 cursor-pointer group select-none">
-                    <div className="relative flex items-center">
-                      <input type="checkbox" checked={filters.roomType?.includes(type)} onChange={(e) => {
-                    const current = filters.roomType || [];
-                    const updated = e.target.checked ? [...current, type] : current.filter((t: string) => t !== type);
-                    handleChange("roomType", updated);
-                  }} className="peer h-5 w-5 cursor-pointer appearance-none rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 transition-all checked:border-gold checked:bg-gold hover:border-gold" />
-
-                      <svg className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white opacity-0 transition-opacity peer-checked:opacity-100" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="20 6 9 17 4 12"></polyline>
-                      </svg>
-                    </div>
-                    <span className="text-slate-600 dark:text-slate-300 group-hover:text-navy dark:group-hover:text-white transition-colors">
-                      {type}
-                    </span>
-                  </label>)}
-              </div>
-            </div>
-
-            {/* For Whom */}
-            <div>
-              <h3 className="font-semibold text-sm text-navy dark:text-white mb-3 uppercase tracking-wider">
-                Ideal For
-              </h3>
-              <div className="space-y-2.5">
-                {["Students", "Working Professionals", "Family"].map((target) => <label key={target} className="flex items-center gap-3 cursor-pointer group select-none">
-                      <div className="relative flex items-center">
-                        <input type="radio" name="forWhom" checked={filters.forWhom === target} onChange={() => handleChange("forWhom", target)} className="peer h-5 w-5 cursor-pointer appearance-none rounded-full border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 transition-all checked:border-gold checked:bg-gold hover:border-gold" />
-
-                        <div className="pointer-events-none absolute left-1/2 top-1/2 h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full bg-white opacity-0 transition-opacity peer-checked:opacity-100"></div>
-                      </div>
-                      <span className="text-slate-600 dark:text-slate-300 group-hover:text-navy dark:group-hover:text-white transition-colors">
-                        {target}
-                      </span>
-                    </label>)}
-              </div>
-            </div>
-
-            {/* Amenities */}
-            <div>
-              <h3 className="font-semibold text-sm text-navy dark:text-white mb-3 uppercase tracking-wider">
-                Amenities
-              </h3>
-              <div className="space-y-2.5">
-                {amenities.map((amenity) => <label key={amenity} className="flex items-center gap-3 cursor-pointer group select-none">
-                    <div className="relative flex items-center">
-                      <input type="checkbox" checked={filters.amenities?.includes(amenity)} onChange={() => toggleAmenity(amenity)} className="peer h-5 w-5 cursor-pointer appearance-none rounded-md border border-slate-300 dark:border-slate-600 bg-white dark:bg-slate-800 transition-all checked:border-gold checked:bg-gold hover:border-gold" />
-
-                      <svg className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 text-white opacity-0 transition-opacity peer-checked:opacity-100" xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round">
-                        <polyline points="20 6 9 17 4 12"></polyline>
-                      </svg>
-                    </div>
-                    <span className="text-slate-600 dark:text-slate-300 group-hover:text-navy dark:group-hover:text-white transition-colors">
-                      {amenity}
-                    </span>
-                  </label>)}
-              </div>
-            </div>
-          </div>
-
-          {/* Footer Actions */}
-          <div className="p-5 border-t border-slate-100 dark:border-slate-800 bg-slate-50 dark:bg-slate-900/50">
-            <button onClick={() => setFilters({})} className="w-full py-3.5 border border-slate-200 dark:border-slate-700 rounded-xl text-slate-600 dark:text-slate-300 font-semibold text-sm hover:bg-white dark:hover:bg-slate-800 hover:text-navy dark:hover:text-white hover:border-navy dark:hover:border-white transition-all shadow-sm">
-              Reset All Filters
-            </button>
-          </div>
+          )}
         </div>
-      </aside>
-    </>;
+
+        {/* Scrollable filter content */}
+        <div className="flex-1 overflow-y-auto overscroll-contain px-5 py-5 space-y-7">
+          {/* Location */}
+          <section>
+            <label htmlFor="filter-city" className={sectionLabel}>
+              Location
+            </label>
+            <div className="relative">
+              <select
+                id="filter-city"
+                aria-label="Select city"
+                value={local.city || ""}
+                onChange={(e) => handleCityChange(e.target.value)}
+                className="w-full appearance-none rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 pr-9 text-sm text-slate-700 dark:text-slate-200 outline-none transition focus:border-[rgba(212,175,55,0.6)] focus:ring-2 focus:ring-[rgba(212,175,55,0.15)] cursor-pointer"
+              >
+                <option value="">All Cities</option>
+                {cities.map((c) => (
+                  <option key={c.id} value={normalizeCityValue(c.name)}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+              <div className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-slate-400">
+                <svg
+                  width="14"
+                  height="14"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="m6 9 6 6 6-6" />
+                </svg>
+              </div>
+            </div>
+          </section>
+
+          {/* ✅ NEW: Multi-select Area/Locality */}
+          {local.city && (
+            <section>
+              <label className={sectionLabel}>
+                Area
+              </label>
+              <MultiSelectAreaPicker
+                aria-label="Select areas"
+                areas={normalizedAreaOptions}
+                selectedIds={local.areaIds || []}
+                isLoading={Boolean(locationsLoading[local.city])}
+                loadingText="Loading areas for this city..."
+                onChange={(selectedIds) => {
+                  setLocal((prev: any) => ({
+                    ...prev,
+                    areaIds: selectedIds,
+                    areaId: selectedIds.length === 1 ? selectedIds[0] : "",
+                    location: selectedIds.length === 1 
+                      ? (normalizedAreaOptions.find((a) => a.id === selectedIds[0])?.name || "")
+                      : "",
+                  }));
+                }}
+                placeholder="Select areas..."
+                searchPlaceholder="Search areas..."
+                disabled={!local.city || locationsLoading[local.city]}
+              />
+            </section>
+          )}
+
+          {/* Room Type */}
+          <section>
+            <span className={sectionLabel}>Room Type</span>
+            <div className="grid grid-cols-2 gap-2">
+              {ROOM_TYPE_OPTIONS.map((t) => {
+                const active =
+                  (local.roomTypes || []).includes(t.value) ||
+                  local.roomType === t.value;
+                return (
+                  <button
+                    key={t.value}
+                    onClick={() => toggleInArray("roomTypes", t.value)}
+                    className={filterBtn(active)}
+                  >
+                    {t.label}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Ideal For */}
+          <section>
+            <span className={sectionLabel}>Ideal For</span>
+            <div className="space-y-2">
+              {IDEAL_FOR_OPTIONS.map((o) => {
+                const active = (local.idealFor || []).includes(o.value);
+                return (
+                  <button
+                    key={o.value}
+                    onClick={() => toggleInArray("idealFor", o.value)}
+                    className={`w-full ${filterBtn(active)}`}
+                  >
+                    {o.label}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Gender Preference */}
+          <section>
+            <span className={sectionLabel}>Gender Preference</span>
+            <div className="space-y-2">
+              {GENDER_PREFERENCE_UI_OPTIONS.map((g) => {
+                const active = local.genderPreference === g.value;
+                return (
+                  <button
+                    key={g.value}
+                    onClick={() =>
+                      set("genderPreference", active ? "" : g.value)
+                    }
+                    className={`w-full ${filterBtn(active)}`}
+                  >
+                    {g.label}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+
+          {/* Price Range */}
+          <section>
+            <span className={sectionLabel}>Price Range (₹)</span>
+            <div className="flex items-center gap-2">
+              <input
+                type="number"
+                placeholder="Min"
+                min={MIN_RENT}
+                max={MAX_RENT}
+                step={500}
+                value={local.minPrice ?? ""}
+                onChange={(e) => handlePrice("minPrice", e.target.value)}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 text-sm text-slate-700 dark:text-slate-200 outline-none focus:border-[rgba(212,175,55,0.6)] focus:ring-2 focus:ring-[rgba(212,175,55,0.15)] placeholder:text-slate-400 transition"
+              />
+              <span className="text-slate-400 font-light">–</span>
+              <input
+                type="number"
+                placeholder="Max"
+                min={MIN_RENT}
+                max={MAX_RENT}
+                step={500}
+                value={local.maxPrice ?? ""}
+                onChange={(e) => handlePrice("maxPrice", e.target.value)}
+                className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-800/60 px-3 py-2.5 text-sm text-slate-700 dark:text-slate-200 outline-none focus:border-[rgba(212,175,55,0.6)] focus:ring-2 focus:ring-[rgba(212,175,55,0.15)] placeholder:text-slate-400 transition"
+              />
+            </div>
+          </section>
+
+          {/* Budget Presets */}
+          <section>
+            <span className={sectionLabel}>Budget Presets</span>
+            <div className="space-y-2">
+              {BUDGET_RANGES.map((r) => {
+                const active =
+                  local.minPrice === r.min && local.maxPrice === r.max;
+                return (
+                  <button
+                    key={r.label}
+                    onClick={() =>
+                      setLocal((p: any) => ({
+                        ...p,
+                        minPrice: r.min,
+                        maxPrice: r.max,
+                      }))
+                    }
+                    className={`w-full ${filterBtn(active)}`}
+                  >
+                    {r.label}
+                  </button>
+                );
+              })}
+            </div>
+          </section>
+        </div>
+
+        {/* Footer actions */}
+        <div className="flex-shrink-0 px-5 py-4 border-t border-slate-100 dark:border-slate-800/80 space-y-2.5 bg-white dark:bg-[#100e09]">
+          <button
+            onClick={applyFilters}
+            disabled={isLoading}
+            className="w-full py-3 rounded-xl text-sm font-bold text-white shadow-lg transition-all active:scale-95 disabled:opacity-60 disabled:cursor-not-allowed"
+            style={{
+              background: "rgba(212,175,55,0.9)",
+              boxShadow: "0 4px 20px rgba(212,175,55,0.25)",
+            }}
+          >
+            {isLoading ? (
+              <span className="flex items-center justify-center gap-2">
+                <span className="h-4 w-4 rounded-full border-2 border-white border-t-transparent animate-spin" />
+                Applying…
+              </span>
+            ) : resultCount > 0 ? (
+              `Show ${resultCount} properties`
+            ) : (
+              "Apply Filters"
+            )}
+          </button>
+          <button
+            onClick={clearAll}
+            disabled={isLoading}
+            className="w-full py-3 rounded-xl border border-slate-200 dark:border-slate-700 text-sm font-semibold text-slate-600 dark:text-slate-300 transition-all hover:bg-slate-50 dark:hover:bg-slate-800/60 hover:text-slate-800 dark:hover:text-white disabled:opacity-60"
+          >
+            Clear All
+          </button>
+        </div>
+      </>
+    ),
+    [
+      local,
+      activeCount,
+      isMobile,
+      isLoading,
+      resultCount,
+      cities,
+      locationsByCity,
+      locationsLoading,
+      handleCityChange,
+      applyFilters,
+      clearAll,
+      set,
+      toggleInArray,
+      handlePrice,
+      filterBtn,
+      sectionLabel,
+    ],
+  );
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     MOBILE VERSION: Portal-based full-screen overlay
+     ═══════════════════════════════════════════════════════════════════════════ */
+  const MobileDrawer =
+    isMobile && isOpen
+      ? createPortal(
+          <>
+            {/* Backdrop */}
+            <div
+              onClick={onClose}
+              className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm transition-opacity duration-300"
+              aria-hidden
+            />
+            {/* Drawer */}
+            <aside
+              className="fixed inset-y-0 left-0 z-50 w-[min(300px,90vw)] flex flex-col bg-white dark:bg-[#100e09] border-r border-slate-200/70 dark:border-slate-800/60 shadow-2xl transition-transform duration-300 ease-in-out translate-x-0"
+              style={{
+                paddingTop: "env(safe-area-inset-top)",
+                paddingBottom: "env(safe-area-inset-bottom)",
+              }}
+            >
+              {FilterContent}
+            </aside>
+          </>,
+          document.body,
+        )
+      : null;
+
+  /* ═══════════════════════════════════════════════════════════════════════════
+     DESKTOP VERSION: Inline sticky sidebar
+     
+     Note: Parent controls visibility with hidden lg:block wrapper
+     This component renders the sidebar when !isMobile
+     Parent controls WHERE and IF it's displayed
+     ═══════════════════════════════════════════════════════════════════════════ */
+  const DesktopSidebar = !isMobile ? (
+    <aside
+      /* ✅ CRITICAL FIX #4: Added h-full */
+      /* - h-full: Inherit 100% height from parent sidebar wrapper */
+      /* - Now FilterContent's flex-1 works properly on defined parent height */
+      /* - Result: Content fills sidebar, scrolls internally, buttons always visible */
+      className="h-full flex flex-col w-full rounded-2xl border border-slate-200/70 dark:border-slate-800/60 bg-white dark:bg-[#100e09]"
+    >
+      {FilterContent}
+    </aside>
+  ) : null;
+
+  return (
+    <>
+      {MobileDrawer}
+      {DesktopSidebar}
+    </>
+  );
 }
+
+export const FilterSidebar = memo(FilterSidebarComponent);

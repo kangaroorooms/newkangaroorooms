@@ -1,6 +1,7 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
-import { useAppSelector } from '../../src/store/hooks';
+import { useAppSelector } from '../../store/hooks';
+import { Role } from '../../types/api.types';
 export function AdminRoute({
   children
 
@@ -26,7 +27,7 @@ export function AdminRoute({
     return <Navigate to="/auth/login" replace />;
   }
   // ✅ FIX: support real backend role values
-  const isAdmin = user.role === 'ADMIN' || user.role === 'admin';
+  const isAdmin = user.role === Role.ADMIN;
   if (!isAdmin) {
     return <Navigate to="/" replace />;
   }

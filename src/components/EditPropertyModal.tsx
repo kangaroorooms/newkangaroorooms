@@ -1,407 +1,346 @@
-import React, { useEffect, useState, useRef } from 'react';
-import { X } from 'lucide-react';
-import { useAppDispatch, useAppSelector } from '../src/store/hooks';
-import { updateRoom } from '../src/store/slices/rooms.slice';
-import { loadAllCities, loadAmenities } from '../src/store/slices/metadata.slice';
-import ImageUpload from './ImageUpload';
-import { Room, IdealFor } from '../src/types/api.types';
-import { showToast } from '../src/store/slices/ui.slice';
+import React, {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  useId,
+} from "react";
+import { X, ShieldCheck, PencilLine, Sparkles } from "lucide-react";
+import { useAppDispatch, useAppSelector } from "../store/hooks";
+import { updateRoom } from "../store/slices/rooms.slice";
+import { showToast } from "../store/slices/ui.slice";
+import { PropertyForm, PropertyFormData } from "./PropertyForm";
+import { getRoomFormData } from "./propertyFormUtils";
+import FullscreenLoader from "./ui/Loader";
+import getPropertyValidationErrors from "../utils/propertyValidation";
+import { useModalLifecycle } from "../hooks/useModalLifecycle";
+import { usePropertyLocation } from "../hooks/usePropertyLocation";
+import { usePropertyImages } from "../hooks/usePropertyImages";
+import { usePropertyAmenities } from "../hooks/usePropertyAmenities";
+import {
+  Room,
+  type UpdateRoomInput,
+  type CreateRoomInput,
+} from "../types/api.types";
+
 interface EditPropertyModalProps {
   isOpen: boolean;
   onClose: () => void;
   room: Room;
+  isAdmin?: boolean;
+  onEditComplete?: () => void;
+  forcePendingResubmission?: boolean;
 }
+
 export function EditPropertyModal({
   isOpen,
   onClose,
-  room
+  room,
+  isAdmin = false,
+  onEditComplete,
+  forcePendingResubmission = false,
 }: EditPropertyModalProps) {
   const dispatch = useAppDispatch();
-  const {
-    loading
-  } = useAppSelector((state) => state.rooms);
-  const {
-    allCities,
-    amenities
-  } = useAppSelector((state) => state.metadata);
+  const { allCities, locationsByCity, locationsLoading } = useAppSelector(
+    (state) => state.metadata,
+  );
   const isUpdating = useAppSelector((state) => state.rooms.loading.update);
-  const [initialData, setInitialData] = useState<typeof formData | null>(null);
-  const [formData, setFormData] = useState({
-    title: room.title,
-    city: room.city,
-    location: room.location,
-    landmark: room.landmark,
-    pricePerMonth: room.pricePerMonth.toString(),
-    roomType: room.roomType,
-    idealFor: room.idealFor,
-    description: room.description,
-    amenities: room.amenities,
-    images: [] as string[]
-  });
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const fieldRefs = useRef<Record<string, HTMLElement | null>>({});
+
+  const modalTitleId = useId();
+  const modalDescriptionId = useId();
+  const modalRef = useRef<HTMLDivElement | null>(null);
+  const firstFocusableRef = useRef<HTMLInputElement | null>(null);
   const errorSummaryRef = useRef<HTMLDivElement | null>(null);
-  // Available ideal tenant types
-  const idealForOptions: IdealFor[] = ['Students', 'Working Professionals', 'Family'];
-  useEffect(() => {
-    if (allCities.length === 0) {
-      dispatch(loadAllCities());
-    }
-    if (amenities.length === 0) {
-      dispatch(loadAmenities());
-    }
-  }, [dispatch, allCities.length, amenities.length]);
-  useEffect(() => {
-    const data = {
-      title: room.title,
-      city: room.city,
-      location: room.location,
-      landmark: room.landmark,
-      pricePerMonth: room.pricePerMonth.toString(),
-      roomType: room.roomType,
-      idealFor: room.idealFor,
-      description: room.description,
-      amenities: room.amenities,
-      images: Array.isArray(room.images) ? room.images : []
-    };
+  const fieldRefs = useRef<Record<string, HTMLElement | null>>({});
+
+  const [formData, setFormData] = useState<PropertyFormData>(
+    getRoomFormData(room),
+  );
+  const [initialData, setInitialData] = useState<PropertyFormData>(
+    getRoomFormData(room),
+  );
+  const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const handleSafeClose = () => {
+    if (isUpdating) return;
+    const data = getRoomFormData(room);
     setFormData(data);
     setInitialData(data);
-  }, [isOpen]);
-  // useEffect(() => {
-  //   document.body.style.overflow = 'hidden';
-  //   return () => {
-  //     document.body.style.overflow = '';
-  //   };
-  // }, []);
-  useEffect(() => {
-    // store original overflow value
-    const originalOverflow = document.body.style.overflow;
+    setErrors({});
+    onClose();
+  };
 
-    // lock scroll
-    document.body.style.overflow = 'hidden';
-    return () => {
-      // restore original value correctly
-      document.body.style.overflow = originalOverflow || 'auto';
-    };
-  }, []);
-  if (!isOpen) return null;
-  const getChangedFields = () => {
-    if (!initialData) return {};
-    const changed: any = {};
-    (Object.keys(formData) as (keyof typeof formData)[]).forEach((key) => {
-      const current = formData[key];
-      const initial = initialData[key];
-      if (JSON.stringify(current) !== JSON.stringify(initial)) {
-        changed[key] = key === 'pricePerMonth' ? Number(current) : current;
-      }
+  useModalLifecycle({
+    modalRef,
+    isOpen,
+    isBusy: isUpdating,
+    onSafeClose: handleSafeClose,
+  });
+
+  const clearError = (field: string) => {
+    setErrors((prev) => {
+      if (!prev[field]) return prev;
+      const next = { ...prev };
+      delete next[field];
+      return next;
     });
+  };
+
+  const { handleSelectCity, handleSelectArea } = usePropertyLocation({
+    dispatch,
+    allCities,
+    locationsByCity,
+    locationsLoading,
+    formData,
+    setFormData,
+    clearError,
+    autoMapLegacyLocation: true,
+    isOpen,
+  });
+
+  const { handleImagesChange } = usePropertyImages({
+    formData,
+    setFormData,
+    clearError,
+  });
+
+  const { handleAmenitiesChange, toggleIdealFor } = usePropertyAmenities({
+    formData,
+    setFormData,
+    clearError,
+  });
+
+  const getChangedFields = () => {
+    const changed: Partial<PropertyFormData> = {};
+
+    (Object.keys(formData) as Array<keyof PropertyFormData>).forEach(
+      (key) => {
+        const current = formData[key];
+        const initial = initialData[key];
+
+        if (JSON.stringify(current) !== JSON.stringify(initial)) {
+          Object.assign(changed, { [key]: current });
+        }
+      },
+    );
+
     return changed;
   };
-  const validateChangedFields = (data: any) => {
-    const newErrors: Record<string, string> = {};
-    if ('title' in data && data.title.trim().length < 5) {
-      newErrors.title = 'Title must be at least 5 characters';
+
+  const validate = useCallback(
+    (focusOnError = true) => {
+      const newErrors = getPropertyValidationErrors(formData);
+      setErrors(newErrors);
+
+      if (Object.keys(newErrors).length > 0) {
+        if (!focusOnError) return false;
+
+        const firstKey = Object.keys(newErrors)[0];
+        const el = fieldRefs.current[firstKey];
+
+        if (el) {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+          (el as HTMLElement).focus?.();
+        } else if (errorSummaryRef.current) {
+          errorSummaryRef.current.focus();
+        }
+
+        return false;
+      }
+
+      return true;
+    },
+    [formData],
+  );
+
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const data = getRoomFormData(room);
+    setFormData(data);
+    setInitialData(data);
+    setErrors({});
+
+    const timeout = setTimeout(() => {
+      firstFocusableRef.current?.focus();
+    }, 50);
+
+    return () => {
+      clearTimeout(timeout);
+    };
+  }, [isOpen, room]);
+
+  if (!isOpen) return null;
+
+  const handleFieldChange = (
+    field: keyof PropertyFormData,
+    value: any,
+  ) => {
+    setFormData((prev) => ({
+      ...prev,
+      [field]: value,
+    }));
+
+    if (errors[field]) {
+      clearError(field);
     }
-    if ('city' in data && !data.city) {
-      newErrors.city = 'City is required';
-    }
-    if ('location' in data && data.location.trim().length < 3) {
-      newErrors.location = 'Location is required';
-    }
-    if ('pricePerMonth' in data && Number(data.pricePerMonth) <= 0) {
-      newErrors.pricePerMonth = 'Price must be positive';
-    }
-    // if ("description" in data && data.description.trim().length < 20) {
-    //   newErrors.description = "Description must be at least 20 characters";
-    // }
-    if ('description' in data && data.description.trim().length < 20) {
-      const remaining = 20 - data.description.trim().length;
-      newErrors.description = `${remaining} more character${remaining !== 1 ? 's' : ''} required`;
-    }
-    if ('idealFor' in data && data.idealFor.length === 0) {
-      newErrors.idealFor = 'Select at least one tenant type';
-    }
-    if ('images' in data && data.images.length === 0) {
-      newErrors.images = 'At least one image is required';
-    }
-    setErrors(newErrors);
-    if (Object.keys(newErrors).length > 0) {
-      const firstKey = Object.keys(newErrors)[0];
-      fieldRefs.current[firstKey]?.scrollIntoView({
-        behavior: 'smooth',
-        block: 'center'
-      });
-      fieldRefs.current[firstKey]?.focus?.();
-      errorSummaryRef.current?.focus();
-      return false;
-    }
-    return true;
   };
-  const handleSubmit = (e: React.FormEvent) => {
+
+  const handleMapChange = (latitude: number | null, longitude: number | null) => {
+    setFormData((prev) => ({
+      ...prev,
+      latitude,
+      longitude,
+    }));
+    clearError("mapLocation");
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isUpdating) return;
+    if (!validate()) return;
+
     const changedData = getChangedFields();
+
     if (Object.keys(changedData).length === 0) {
-      dispatch(showToast({
-        message: 'No changes made',
-        type: 'info'
-      }));
+      dispatch(
+        showToast({
+          message: "No changes made",
+          type: "info",
+        }),
+      );
       return;
     }
-    if (!validateChangedFields(changedData)) return;
-    dispatch(updateRoom({
-      id: room.id,
-      data: changedData
-    })).then((action) => {
-      if (updateRoom.fulfilled.match(action)) {
-        onClose();
-      }
-    });
-  };
-  const toggleAmenity = (amenity: string) => {
-    setFormData((prev) => ({
-      ...prev,
-      amenities: prev.amenities.includes(amenity) ? prev.amenities.filter((a) => a !== amenity) : [...prev.amenities, amenity]
-    }));
-  };
-  const toggleIdealFor = (option: IdealFor) => {
-    setFormData((prev) => ({
-      ...prev,
-      idealFor: prev.idealFor.includes(option) ? prev.idealFor.filter((o) => o !== option) : [...prev.idealFor, option]
-    }));
-  };
-  return <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 overflow-y-auto">
-      <div className="absolute inset-0 bg-navy/60 backdrop-blur-sm" onClick={onClose} />
 
+    const { pricePerMonth, ...otherChangedData } = changedData;
+    const sanitizedChanges = { ...otherChangedData } as Record<string, unknown>;
 
-      <div className="relative w-full max-w-3xl bg-white dark:bg-slate-800 rounded-2xl shadow-2xl my-8">
-        <div className="p-6 border-b border-slate-100 dark:border-slate-700 flex justify-between items-center sticky top-0 bg-white dark:bg-slate-800 rounded-t-2xl z-10">
-          <h3 className="text-2xl font-playfair font-bold text-navy dark:text-white">
-            Edit Property
-          </h3>
-          <button onClick={onClose} className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-colors">
+    if (sanitizedChanges.roomType === "") {
+      delete sanitizedChanges.roomType;
+    }
 
-            <X className="w-5 h-5 text-slate-500 dark:text-slate-400" />
-          </button>
+    const payload: UpdateRoomInput = {
+      ...sanitizedChanges,
+      ...(pricePerMonth !== undefined && {
+        pricePerMonth: Number(pricePerMonth),
+      }),
+      ...(forcePendingResubmission && {
+        reviewStatus: "pending" as const,
+        isActive: false,
+      }),
+    } as UpdateRoomInput;
+
+    const action = await dispatch(
+      updateRoom({
+        id: room.id,
+        data: payload,
+      }),
+    );
+
+    if (updateRoom.fulfilled.match(action)) {
+      handleSafeClose();
+      onEditComplete?.();
+    }
+  };
+
+  return (
+    <>
+      {isUpdating && (
+        <FullscreenLoader message="Saving your property changes..." />
+      )}
+
+      <div className="fixed inset-0 z-[60] p-0 sm:p-4">
+        <div
+          className="absolute inset-0 bg-black/60 backdrop-blur-md"
+          onClick={handleSafeClose}
+          aria-hidden="true"
+        />
+
+        <div className="relative flex h-full items-end justify-center sm:items-center">
+          <div
+            ref={modalRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby={modalTitleId}
+            aria-describedby={modalDescriptionId}
+            className="relative z-50 flex h-[100dvh] w-full flex-col overflow-hidden rounded-t-[2rem] border border-[rgba(212,175,55,0.14)] bg-[#f8f6f1] shadow-2xl dark:bg-[#0d0b06] sm:h-auto sm:max-h-[94vh] sm:max-w-5xl sm:rounded-[2rem]"
+          >
+            <div
+              className="sticky top-0 z-20 border-b border-[rgba(212,175,55,0.12)] bg-white/80 px-4 py-4 backdrop-blur-xl dark:bg-[#0d0b06]/90 sm:px-6"
+              style={{ paddingTop: "max(2rem, env(safe-area-inset-top))" }}
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="mb-2 flex flex-wrap items-center gap-2">
+                    <div className="inline-flex items-center gap-2 rounded-full border border-[rgba(212,175,55,0.18)] bg-[rgba(212,175,55,0.10)] px-3 py-1 text-xs font-medium text-[rgba(212,175,55,0.95)]">
+                      <PencilLine className="h-3.5 w-3.5" />
+                      Edit Listing
+                    </div>
+                    {isAdmin && (
+                      <div className="inline-flex items-center gap-2 rounded-full border border-blue-200 bg-blue-50 px-3 py-1 text-xs font-semibold text-blue-700 dark:border-blue-500/20 dark:bg-blue-500/10 dark:text-blue-300">
+                        <ShieldCheck className="h-3.5 w-3.5" />
+                        ADMIN
+                      </div>
+                    )}
+                  </div>
+                  <h2
+                    id={modalTitleId}
+                    className="text-xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-2xl"
+                  >
+                    Edit Property
+                  </h2>
+                  <p
+                    id={modalDescriptionId}
+                    className="mt-1 text-sm text-slate-500 dark:text-slate-400"
+                  >
+                    {isAdmin
+                      ? "Update this listing with full admin control."
+                      : "Update your listing details and keep it renter-ready."}
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleSafeClose}
+                  disabled={isUpdating}
+                  aria-label="Close edit property modal"
+                  className="flex h-11 w-11 items-center justify-center rounded-2xl border border-[rgba(212,175,55,0.12)] bg-white/70 text-slate-600 transition hover:bg-white dark:bg-[#15110b] dark:text-slate-300 dark:hover:bg-[#1c1710] disabled:opacity-50"
+                >
+                  <X className="h-5 w-5" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6">
+              <div className="mx-auto w-full max-w-4xl">
+                <PropertyForm
+                  formData={formData}
+                  errors={errors}
+                  allCities={allCities}
+                  locationsByCity={locationsByCity}
+                  locationsLoading={locationsLoading}
+                  fieldRefs={fieldRefs}
+                  onFieldChange={handleFieldChange}
+                  onSelectCity={handleSelectCity}
+                  onSelectArea={handleSelectArea}
+                  onMapChange={handleMapChange}
+                  onImagesChange={handleImagesChange}
+                  onAmenitiesChange={handleAmenitiesChange}
+                  onToggleIdealFor={toggleIdealFor}
+                  onSubmit={handleSubmit}
+                  onCancel={handleSafeClose}
+                  isSubmitting={isUpdating}
+                  submitLabel={
+                    isAdmin ? "Save Changes" : "Save Changes"
+                  }
+                  cancelLabel="Cancel"
+                  autoFocusRef={firstFocusableRef}
+                />
+              </div>
+            </div>
+          </div>
         </div>
-        <form onSubmit={handleSubmit} className="p-6 space-y-6 max-h-[70vh] overflow-y-auto">
-
-          {/* Error summary */}
-          {Object.keys(errors).length > 0 && <div ref={errorSummaryRef} tabIndex={-1} role="alert" aria-live="assertive" className="rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-900/20 p-4">
-
-              <p className="font-semibold text-red-700 dark:text-red-400">
-                Please fix the following errors:
-              </p>
-              <ul className="list-disc pl-5 mt-2 text-sm text-red-600 dark:text-red-300">
-                {Object.values(errors).map((msg, i) => <li key={i}>{msg}</li>)}
-              </ul>
-            </div>}
-
-          {/* Property Photos */}
-          <div ref={(el) => fieldRefs.current.images = el}>
-            <ImageUpload images={formData.images} onImagesChange={(images) => setFormData((prev) => ({
-            ...prev,
-            images
-          }))} />
-
-
-            {errors.images && <p className="text-red-500 dark:text-red-400 text-xs mt-2">
-                {errors.images}
-              </p>}
-          </div>
-
-          {/* Title + City */}
-          <div className="grid md:grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="title" className="block text-sm font-medium mb-1 dark:text-slate-300">
-
-                Property Title
-              </label>
-              <input ref={(el) => fieldRefs.current.title = el} id="title" value={formData.title} onChange={(e) => setFormData({
-              ...formData,
-              title: e.target.value
-            })} aria-invalid={!!errors.title} aria-describedby={errors.title ? 'title-error' : undefined} className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 dark:bg-slate-700 dark:text-white
-          ${errors.title ? 'border-red-400 dark:border-red-700 focus:ring-red-300' : 'border-slate-200 dark:border-slate-600 focus:ring-gold'}`} />
-
-
-              {errors.title && <p id="title-error" className="text-red-500 dark:text-red-400 text-xs mt-1">
-
-                  {errors.title}
-                </p>}
-            </div>
-
-            <div>
-              <label htmlFor="city" className="block text-sm font-medium mb-1 dark:text-slate-300">
-
-                City
-              </label>
-              <select ref={(el) => fieldRefs.current.city = el} id="city" value={formData.city} onChange={(e) => setFormData({
-              ...formData,
-              city: e.target.value
-            })} aria-invalid={!!errors.city} aria-describedby={errors.city ? 'cityId-error' : undefined} className={`w-full px-4 py-3 border rounded-lg focus:outline-none focus:ring-2 dark:bg-slate-700 dark:text-white
-                  ${errors.city ? 'border-red-400 dark:border-red-700 focus:ring-red-300' : 'border-slate-200 dark:border-slate-600 focus:ring-gold'}`}>
-
-                {allCities.map((c) => <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>)}
-              </select>
-              {errors.city && <p id="city-error" className="text-red-500 dark:text-red-400 text-xs mt-1">
-
-                  {errors.city}
-                </p>}
-            </div>
-          </div>
-
-          {/* Location + Landmark */}
-          <div className="grid md:grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="location" className="block text-sm font-medium mb-1 dark:text-slate-300">
-
-                Location
-              </label>
-              <input ref={(el) => fieldRefs.current.location = el} id="location" value={formData.location} onChange={(e) => setFormData({
-              ...formData,
-              location: e.target.value
-            })} aria-invalid={!!errors.location} aria-describedby={errors.location ? 'location-error' : undefined} className={`w-full px-4 py-3 border rounded-lg focus:ring-2 dark:bg-slate-700 dark:text-white
-          ${errors.location ? 'border-red-400 dark:border-red-700 focus:ring-red-300' : 'border-slate-200 dark:border-slate-600 focus:ring-gold'}`} />
-
-
-              {errors.location && <p id="location-error" className="text-red-500 dark:text-red-400 text-xs mt-1">
-
-                  {errors.location}
-                </p>}
-            </div>
-
-            <div>
-              <label htmlFor="landmark" className="block text-sm font-medium mb-1 dark:text-slate-300">
-
-                Landmark
-              </label>
-              <input id="landmark" value={formData.landmark} onChange={(e) => setFormData({
-              ...formData,
-              landmark: e.target.value
-            })} className="w-full px-4 py-3 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-gold dark:bg-slate-700 dark:text-white" />
-
-            </div>
-          </div>
-
-          {/* Price + Room Type */}
-          <div className="grid md:grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="price" className="block text-sm font-medium mb-1 dark:text-slate-300">
-
-                Monthly Rent (₹)
-              </label>
-              <input ref={(el) => fieldRefs.current.pricePerMonth = el} id="price" type="number" value={formData.pricePerMonth} onChange={(e) => setFormData({
-              ...formData,
-              pricePerMonth: e.target.value
-            })} aria-invalid={!!errors.pricePerMonth} aria-describedby={errors.pricePerMonth ? 'price-error' : undefined} className={`w-full px-4 py-3 border rounded-lg focus:ring-2 dark:bg-slate-700 dark:text-white
-          ${errors.pricePerMonth ? 'border-red-400 dark:border-red-700 focus:ring-red-300' : 'border-slate-200 dark:border-slate-600 focus:ring-gold'}`} />
-
-
-              {errors.pricePerMonth && <p id="price-error" className="text-red-500 dark:text-red-400 text-xs mt-1">
-
-                  {errors.pricePerMonth}
-                </p>}
-            </div>
-
-            <div>
-              <label className="block text-sm font-medium mb-1 dark:text-slate-300">
-                Room Type
-              </label>
-              <select value={formData.roomType} onChange={(e) => setFormData({
-              ...formData,
-              roomType: e.target.value as any
-            })} className="w-full px-4 py-3 border border-slate-200 dark:border-slate-600 rounded-lg focus:ring-gold dark:bg-slate-700 dark:text-white">
-
-                <option value="Single">Single</option>
-                <option value="Shared">Shared</option>
-                <option value="PG">PG</option>
-                <option value="1BHK">1BHK</option>
-                <option value="2BHK">2BHK</option>
-              </select>
-            </div>
-          </div>
-
-          {/* Ideal For */}
-          <fieldset ref={(el) => fieldRefs.current.idealFor = el} aria-invalid={!!errors.idealFor} className="space-y-2">
-
-            <legend className="block text-sm font-medium dark:text-slate-300">
-              Ideal For
-            </legend>
-            <div className="grid md:grid-cols-3 gap-2">
-              {idealForOptions.map((option) => <label key={option} className="flex items-center gap-2 p-3 border dark:border-slate-600 rounded-lg dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700">
-
-                  <input type="checkbox" checked={formData.idealFor.includes(option)} onChange={() => toggleIdealFor(option)} />
-
-
-                  {option}
-                </label>)}
-            </div>
-            {errors.idealFor && <p className="text-red-500 dark:text-red-400 text-xs">
-                {errors.idealFor}
-              </p>}
-          </fieldset>
-
-          {/* Description */}
-          <div>
-            <label htmlFor="description" className="block text-sm font-medium mb-1 dark:text-slate-300">
-
-              Description
-            </label>
-            <textarea ref={(el) => fieldRefs.current.description = el} id="description" rows={4} value={formData.description} onChange={(e) => setFormData({
-            ...formData,
-            description: e.target.value
-          })} aria-invalid={!!errors.description} aria-describedby={errors.description ? 'description-error' : undefined} className={`w-full px-4 py-3 border rounded-lg focus:ring-2 dark:bg-slate-700 dark:text-white
-        ${errors.description ? 'border-red-400 dark:border-red-700 focus:ring-red-300' : 'border-slate-200 dark:border-slate-600 focus:ring-gold'}`} />
-
-
-            {errors.description && <p id="description-error" className="text-red-500 dark:text-red-400 text-xs mt-1">
-
-                {errors.description}
-              </p>}
-          </div>
-
-          {/* Amenities */}
-          <fieldset ref={(el) => fieldRefs.current.amenities = el} className="space-y-2">
-
-            <legend className="block text-sm font-medium dark:text-slate-300">
-              Amenities
-            </legend>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-              {amenities.map((amenity) => <label key={amenity} className="flex items-center gap-2 p-3 border dark:border-slate-600 rounded-lg dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700">
-
-                  <input type="checkbox" checked={formData.amenities.includes(amenity)} onChange={() => toggleAmenity(amenity)} />
-
-
-                  {amenity}
-                </label>)}
-            </div>
-          </fieldset>
-
-          {/* Actions */}
-          <div className="flex gap-4 pt-4 border-t dark:border-slate-700">
-            <button type="button" onClick={onClose}
-          // disabled={loading}
-          className="flex-1 py-3 border dark:border-slate-600 rounded-lg dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700">
-
-              Cancel
-            </button>
-            <button type="submit" disabled={isUpdating} className="flex-1 py-3 bg-navy dark:bg-slate-200 text-white dark:text-navy rounded-lg
-                 disabled:opacity-50 hover:bg-navy/90 dark:hover:bg-white">
-
-
-
-
-
-
-
-
-
-
-              {isUpdating ? 'Saving Changes...' : 'Save Changes'}
-            </button>
-          </div>
-        </form>
       </div>
-    </div>;
+    </>
+  );
 }

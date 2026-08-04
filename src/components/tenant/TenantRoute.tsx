@@ -1,6 +1,6 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
-import { useAppSelector } from '../../src/store/hooks';
+import { useAppSelector } from '../../store/hooks';
 interface TenantRouteProps {
   children: React.ReactNode;
 }

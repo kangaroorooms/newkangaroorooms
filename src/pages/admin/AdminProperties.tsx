@@ -1,23 +1,311 @@
-import React, { useEffect, useState, lazy } from 'react';
-import { Search, MapPin, IndianRupee, Home, Clock } from 'lucide-react';
-import { useAppDispatch, useAppSelector } from '../../src/store/hooks';
-import { fetchAllProperties, requestPropertyCorrection } from '../../src/store/slices/admin.slice';
+import React, { useCallback, useEffect, useRef, useState, lazy } from 'react';
+import { Search, MapPin, IndianRupee, Home, Clock, MessageCircle, TrendingUp, AlertCircle } from 'lucide-react';
+import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { fetchAllProperties, requestPropertyCorrection, updateAdminPropertyAvailability } from '../../store/slices/admin.slice';
 import { RequestCorrectionModal } from '../../components/admin/RequestCorrectionModal';
-import { Room, FeedbackReason, FeedbackSeverity } from '../../src/types/api.types';
+import { StatusBadge } from '../../components/ui/StatusBadge';
+import { AvailabilityTransitionDialog } from '../../components/AvailabilityTransitionDialog';
+import { AvailabilityStatus, Room, FeedbackReason, FeedbackSeverity } from '../../types/api.types';
 import { useNavigate } from 'react-router-dom';
+import { adminApi } from '../../api/admin.api';
+import { getRelativeTime, getTimeTooltip } from '../../utils/dateFormatting';
+import { buildPropertyWhatsappMessage, generateWhatsAppUrl, isValidWhatsAppPhone } from '../../utils/whatsappMessage';
+
+/**
+ * PROMPT 2: Derive engagement status from timestamps
+ * NOT_RESPONDED: Contacted but no login
+ * VIEWED: Login happened but no property update
+ * ACTIVE: Property was updated
+ */
+type EngagementStatus = 'NOT_RESPONDED' | 'VIEWED' | 'ACTIVE' | 'UNKNOWN';
+
+/**
+ * PROMPT 3: Derive follow-up status based on engagement and timing
+ */
+type FollowUpStatus = 'NONE' | 'NEEDS_FOLLOWUP' | 'REMINDER';
+
+const getEngagementStatus = (property: Room): EngagementStatus => {
+  // No owner engagement data yet
+  if (!property.lastContactedAt && !property.lastLoginAt && !property.lastPropertyUpdateAt) {
+    return 'UNKNOWN';
+  }
+
+  // Owner updated property - highest engagement
+  if (property.lastPropertyUpdateAt) {
+    return 'ACTIVE';
+  }
+
+  // Owner logged in but didn't update
+  if (property.lastLoginAt) {
+    return 'VIEWED';
+  }
+
+  // Owner was contacted but no login yet
+  if (property.lastContactedAt) {
+    return 'NOT_RESPONDED';
+  }
+
+  return 'UNKNOWN';
+};
+
+const getFollowUpStatus = (property: Room): { status: FollowUpStatus; message: string } => {
+  const now = new Date();
+  const HOURS_24 = 24 * 60 * 60 * 1000;
+
+  // Active owners - no follow-up needed
+  if (property.lastPropertyUpdateAt) {
+    const updateTime = new Date(property.lastPropertyUpdateAt).getTime();
+    const diff = now.getTime() - updateTime;
+    if (diff > HOURS_24) {
+      return {
+        status: 'REMINDER',
+        message: 'Property not updated in 24+ hours. Send reminder to keep details fresh.'
+      };
+    }
+    return {
+      status: 'NONE',
+      message: 'Owner actively updating property'
+    };
+  }
+
+  // VIEWED: Logged in but didn't update
+  if (property.lastLoginAt && !property.lastPropertyUpdateAt) {
+    const loginTime = new Date(property.lastLoginAt).getTime();
+    const diff = now.getTime() - loginTime;
+    if (diff > HOURS_24) {
+      return {
+        status: 'REMINDER',
+        message: 'We noticed you logged in. Please complete your property details to go live.'
+      };
+    }
+    return {
+      status: 'NONE',
+      message: 'Owner recently logged in'
+    };
+  }
+
+  // NOT_RESPONDED: Contacted but no login
+  if (property.lastContactedAt && !property.lastLoginAt) {
+    const contactTime = new Date(property.lastContactedAt).getTime();
+    const diff = now.getTime() - contactTime;
+    if (diff > HOURS_24) {
+      return {
+        status: 'NEEDS_FOLLOWUP',
+        message: 'Reminder: Your property is listed on Homilivo. Please login to activate.'
+      };
+    }
+    return {
+      status: 'NONE',
+      message: 'Owner recently contacted'
+    };
+  }
+
+  return {
+    status: 'NONE',
+    message: 'No action needed'
+  };
+};
+
+const getFollowUpBadge = (status: FollowUpStatus) => {
+  const styles: Record<FollowUpStatus, string> = {
+    NEEDS_FOLLOWUP: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800',
+    REMINDER: 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 border border-yellow-200 dark:border-yellow-800',
+    NONE: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800'
+  };
+
+  const labels: Record<FollowUpStatus, string> = {
+    NEEDS_FOLLOWUP: '🔴 Follow-up Needed',
+    REMINDER: '🟡 Reminder',
+    NONE: '🟢 No Action'
+  };
+
+  return {
+    style: styles[status],
+    label: labels[status]
+  };
+};
+
+const getEngagementBadge = (status: EngagementStatus) => {
+  const styles: Record<EngagementStatus, string> = {
+    ACTIVE: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800',
+    VIEWED: 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 border border-yellow-200 dark:border-yellow-800',
+    NOT_RESPONDED: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800',
+    UNKNOWN: 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-600'
+  };
+
+  const labels: Record<EngagementStatus, string> = {
+    ACTIVE: '✓ Active',
+    VIEWED: '📖 Viewed',
+    NOT_RESPONDED: '⏳ No Response',
+    UNKNOWN: '—'
+  };
+
+  return {
+    style: styles[status],
+    label: labels[status]
+  };
+};
+
 export function AdminProperties() {
   const dispatch = useAppDispatch();
   const navigate = useNavigate();
   const {
     properties,
+    propertiesMeta,
     loading
   } = useAppSelector((state) => state.admin);
-  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [currentPage, setCurrentPage] = useState(1);
+  const [limit, setLimit] = useState(10);  const [sort, setSort] = useState<string>('createdAt_desc');  const [filterStatus, setFilterStatus] = useState<string>('all');
+  const [availabilityFilter, setAvailabilityFilter] = useState<string>('all');
+  const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
   const [correctionProperty, setCorrectionProperty] = useState<Room | null>(null);
+  const [availabilityProperty, setAvailabilityProperty] = useState<Room | null>(null);
+  const [availabilityDialogInitialStatus, setAvailabilityDialogInitialStatus] = useState<AvailabilityStatus | undefined>(undefined);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [pendingWhatsAppLinks, setPendingWhatsAppLinks] = useState<{ url: string; property: Room }[]>([]);
+  const [currentWhatsAppIndex, setCurrentWhatsAppIndex] = useState<number>(0);
+  const [followUpSelectedIds, setFollowUpSelectedIds] = useState<Set<string>>(new Set());
+  const [showFollowUpConfirm, setShowFollowUpConfirm] = useState(false);
+  const activePropertiesRequestRef = useRef<{ abort: () => void } | null>(null);
+  const searchTermRef = useRef(searchTerm);
+
   useEffect(() => {
-    dispatch(fetchAllProperties());
-  }, [dispatch]);
+    searchTermRef.current = searchTerm;
+  }, [searchTerm]);
+
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      const nextSearchTerm = searchInput.trim();
+
+      if (nextSearchTerm !== searchTermRef.current) {
+        setCurrentPage(1);
+        setSearchTerm(nextSearchTerm);
+      }
+    }, 400);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [searchInput]);
+
+  const loadProperties = useCallback(() => {
+    activePropertiesRequestRef.current?.abort();
+
+    const request = dispatch(fetchAllProperties({
+      page: currentPage,
+      limit,
+      sort,
+      status: filterStatus !== 'all' ? filterStatus : undefined,
+      availabilityStatus: availabilityFilter !== 'all' ? availabilityFilter : undefined,
+      search: searchTerm || undefined
+    }));
+
+    activePropertiesRequestRef.current = request;
+    request.finally(() => {
+      if (activePropertiesRequestRef.current === request) {
+        activePropertiesRequestRef.current = null;
+      }
+    });
+
+    return request;
+  }, [availabilityFilter, currentPage, dispatch, filterStatus, limit, sort, searchTerm]);
+
+  useEffect(() => {
+    const request = loadProperties();
+
+    return () => {
+      request.abort();
+    };
+  }, [loadProperties]);
+
+  useEffect(() => {
+    return () => {
+      activePropertiesRequestRef.current?.abort();
+    };
+  }, []);
+
+  const handleFilterChange = (newStatus: string) => {
+    setFilterStatus(newStatus);
+    setCurrentPage(1);
+  };
+
+  const handleAvailabilityFilterChange = (newStatus: string) => {
+    setAvailabilityFilter(newStatus);
+    setCurrentPage(1);
+  };
+
+  const handleAvailabilityAction = (property: Room, availabilityStatus: AvailabilityStatus, reason: string) => {
+    dispatch(updateAdminPropertyAvailability({
+      id: property.id,
+      availabilityStatus,
+      reason,
+    }));
+  };
+
+  const handleSearchChange = (value: string) => {
+    setSearchInput(value);
+  };
+
+  const handleLimitChange = (newLimit: number) => {
+    setLimit(newLimit);
+    setCurrentPage(1);  // CRITICAL: Reset to page 1 to avoid out-of-range skip calculations
+  };
+
+  const handleSortChange = (newSort: string) => {
+    setSort(newSort);
+    setCurrentPage(1);  // Reset to page 1 when sort changes
+  };
+
+  /**
+   * Column-based sorting handler
+   * Maps column names to sort strings and handles toggle logic
+   * - Same column: toggle between asc/desc
+   * - New column: use default (createdAt→desc, price→asc)
+   */
+  const handleColumnSort = (columnKey: 'createdAt' | 'pricePerMonth') => {
+    let newSort: string;
+
+    if (columnKey === 'createdAt') {
+      // Toggle between createdAt_desc and createdAt_asc
+      newSort = sort === 'createdAt_desc' ? 'createdAt_asc' : 'createdAt_desc';
+    } else if (columnKey === 'pricePerMonth') {
+      // Toggle between price_asc and price_desc
+      newSort = sort === 'price_asc' ? 'price_desc' : 'price_asc';
+    } else {
+      return; // Safety: unknown column
+    }
+
+    handleSortChange(newSort);
+  };
+
+  /**
+   * Helper to determine if a column is currently sorted and in which direction
+   * Returns: 'asc' | 'desc' | null
+   */
+  const getColumnSortDirection = (columnKey: 'createdAt' | 'pricePerMonth'): 'asc' | 'desc' | null => {
+    if (columnKey === 'createdAt') {
+      if (sort === 'createdAt_asc') return 'asc';
+      if (sort === 'createdAt_desc') return 'desc';
+    } else if (columnKey === 'pricePerMonth') {
+      if (sort === 'price_asc') return 'asc';
+      if (sort === 'price_desc') return 'desc';
+    }
+    return null;
+  };
+
+  /**
+   * Render sort indicator for column headers
+   */
+  const SortIndicator = ({ column }: { column: 'createdAt' | 'pricePerMonth' }) => {
+    const direction = getColumnSortDirection(column);
+    if (direction === 'asc') {
+      return <span className="ml-2 text-navy dark:text-white opacity-100">↑</span>;
+    }
+    if (direction === 'desc') {
+      return <span className="ml-2 text-navy dark:text-white opacity-100">↓</span>;
+    }
+    return <span className="ml-2 text-slate-300 dark:text-slate-600 opacity-0 group-hover/header:opacity-100 transition-opacity">⇅</span>;
+  };
+
   const handleRequestCorrection = (reason: FeedbackReason, message: string, severity?: FeedbackSeverity) => {
     if (correctionProperty) {
       dispatch(requestPropertyCorrection({
@@ -28,34 +316,69 @@ export function AdminProperties() {
       }));
     }
   };
-  const filteredProperties = properties.filter((property) => {
-    const status = property.reviewStatus || (property as any).status || 'approved';
-    const matchesStatus = filterStatus === 'all' || status === filterStatus;
-    const matchesSearch = property.title.toLowerCase().includes(searchTerm.toLowerCase()) || property.location.toLowerCase().includes(searchTerm.toLowerCase());
-    return matchesStatus && matchesSearch;
-  });
   const getStatusBadge = (property: Room) => {
-    const status = property.reviewStatus || (property as any).status || 'approved';
-    const styles = {
-      approved: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400',
-      pending: 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400',
-      rejected: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400',
-      suspended: 'bg-slate-100 dark:bg-slate-700 text-slate-600 dark:text-slate-300',
-      needs_correction: 'bg-orange-100 dark:bg-orange-900/30 text-orange-700 dark:text-orange-400',
-      draft: 'bg-slate-100 dark:bg-slate-700 text-slate-500 dark:text-slate-400'
-    };
-    const labels = {
-      approved: 'Approved',
-      pending: 'Pending Review',
-      rejected: 'Rejected',
-      suspended: 'Suspended',
-      needs_correction: 'Needs Correction',
-      draft: 'Draft'
-    };
-    return <span className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap ${styles[status as keyof typeof styles] || styles.suspended}`}>
+    const status = (property.reviewStatus || (property as any).status || 'APPROVED').toUpperCase();
+    const dotIcon = <span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: 'currentColor' }}></span>;
 
-        {labels[status as keyof typeof labels] || status}
-      </span>;
+    switch (status) {
+      case "APPROVED":
+        return (
+          <StatusBadge variant="success" icon={dotIcon} size="sm">
+            Approved
+          </StatusBadge>
+        );
+      case "NEEDS_CORRECTION":
+        return (
+          <StatusBadge variant="warning" icon={dotIcon} animated size="sm">
+            Needs Correction
+          </StatusBadge>
+        );
+      case "REJECTED":
+        return (
+          <StatusBadge variant="error" icon={dotIcon} size="sm">
+            Rejected
+          </StatusBadge>
+        );
+      case "DRAFT":
+        return (
+          <StatusBadge variant="neutral" icon={dotIcon} size="sm">
+            Draft
+          </StatusBadge>
+        );
+      case "SUSPENDED":
+        return (
+          <StatusBadge variant="error" icon={dotIcon} size="sm">
+            Suspended
+          </StatusBadge>
+        );
+      case "PENDING":
+      default:
+        return (
+          <StatusBadge variant="pending" icon={dotIcon} animateIcon size="sm">
+            Pending Review
+          </StatusBadge>
+        );
+    }
+  };
+  const getAvailabilityBadge = (property: Room) => {
+    const status = property.availabilityStatus || 'AVAILABLE';
+    const styles: Record<string, string> = {
+      AVAILABLE: 'bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800',
+      FILLED: 'bg-red-100 dark:bg-red-900/30 text-red-700 dark:text-red-400 border border-red-200 dark:border-red-800',
+      OWNER_PAUSED: 'bg-yellow-100 dark:bg-yellow-900/30 text-yellow-700 dark:text-yellow-400 border border-yellow-200 dark:border-yellow-800',
+      NEEDS_RECONFIRMATION: 'bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 border border-blue-200 dark:border-blue-800'
+    };
+    const labels: Record<string, string> = {
+      AVAILABLE: 'Available',
+      FILLED: 'Rented Out',
+      OWNER_PAUSED: 'Pause Listing',
+      NEEDS_RECONFIRMATION: 'Needs Reconfirmation'
+    };
+    return (
+      <span className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap ${styles[status] || styles.AVAILABLE}`}>
+        {labels[status] || status}
+      </span>
+    );
   };
   const getTimeSinceFeedback = (createdAt: string) => {
     const now = new Date();
@@ -67,8 +390,182 @@ export function AdminProperties() {
     if (diffHours > 0) return `${diffHours}h ago`;
     return 'Just now';
   };
+
+  const handleSelectProperty = (id: string, checked: boolean) => {
+    const newSet = new Set(selectedIds);
+    if (checked) newSet.add(id);
+    else newSet.delete(id);
+    setSelectedIds(newSet);
+  };
+
+  const handleSelectAll = (checked: boolean) => {
+    if (checked) {
+      setSelectedIds(new Set(properties.map(p => p.id)));
+    } else {
+      setSelectedIds(new Set());
+    }
+  };
+
+  const handleBulkWhatsApp = () => {
+    const selected = properties.filter(p =>
+      selectedIds.has(p.id)
+    );
+
+    const valid = selected.filter(p =>
+      isValidWhatsAppPhone((p as any).owner?.phone)
+    );
+
+    if (valid.length === 0) {
+      alert('No valid phone numbers found');
+      return;
+    }
+
+    // Build queue of WhatsApp URLs using standardized utility
+    const links = valid.map((property) => {
+      const message = buildPropertyWhatsappMessage({
+        name: (property as any).owner?.name || 'Owner',
+        title: property.title,
+        propertyId: property.id,
+      });
+      const url = generateWhatsAppUrl((property as any).owner?.phone || '', message);
+      return { url, property };
+    });
+
+    // Store queue and open first link
+    setPendingWhatsAppLinks(links);
+    setCurrentWhatsAppIndex(0);
+    
+    // Open first WhatsApp link
+    window.open(links[0].url, '_blank', 'noopener,noreferrer');
+  };
+
+  const handleOpenNextWhatsApp = () => {
+    const nextIndex = currentWhatsAppIndex + 1;
+
+    if (nextIndex < pendingWhatsAppLinks.length) {
+      // Ask user to continue
+      const currentProperty = pendingWhatsAppLinks[currentWhatsAppIndex].property;
+      const nextProperty = pendingWhatsAppLinks[nextIndex].property;
+      
+      const continueNext = confirm(
+        `Current: ${currentProperty.title}\n\nContinue to: ${nextProperty.title}?`
+      );
+
+      if (continueNext) {
+        setCurrentWhatsAppIndex(nextIndex);
+        window.open(pendingWhatsAppLinks[nextIndex].url, '_blank', 'noopener,noreferrer');
+      }
+    } else {
+      // All done
+      alert('All WhatsApp chats opened!');
+      clearWhatsAppQueue();
+    }
+  };
+
+  const handleSkipWhatsApp = () => {
+    const nextIndex = currentWhatsAppIndex + 1;
+
+    if (nextIndex < pendingWhatsAppLinks.length) {
+      setCurrentWhatsAppIndex(nextIndex);
+      
+      // Ask if user wants to continue without opening this one
+      const continueNext = confirm(
+        `Skip to: ${pendingWhatsAppLinks[nextIndex].property.title}?`
+      );
+
+      if (continueNext) {
+        window.open(pendingWhatsAppLinks[nextIndex].url, '_blank', 'noopener,noreferrer');
+      }
+    } else {
+      // All done
+      alert('All WhatsApp chats processed!');
+      clearWhatsAppQueue();
+    }
+  };
+
+  const clearWhatsAppQueue = async () => {
+    // Track the contacted properties - async, non-blocking
+    if (pendingWhatsAppLinks.length > 0) {
+      const propertyIds = pendingWhatsAppLinks.map(link => link.property.id);
+      try {
+        await adminApi.trackContactAttempt(propertyIds);
+      } catch {
+        // Don't show error to user - tracking is non-critical
+      }
+    }
+    
+    // Refresh properties with the current page, filters, and debounced search
+    loadProperties();
+    
+    // Clear UI state
+    setPendingWhatsAppLinks([]);
+    setCurrentWhatsAppIndex(0);
+    setSelectedIds(new Set());
+  };
+
+  /**
+   * PROMPT 3: Handle bulk follow-up WhatsApp with personalized messages
+   */
+  const handleFollowUpWhatsApp = () => {
+    const selected = properties.filter(p =>
+      followUpSelectedIds.has(p.id)
+    );
+
+    const valid = selected.filter(p =>
+      isValidWhatsAppPhone((p as any).owner?.phone)
+    );
+
+    if (valid.length === 0) {
+      alert('No valid phone numbers found');
+      return;
+    }
+
+    // Build queue with personalized messages based on engagement status
+    const links = valid.map((property) => {
+      const phone = (property as any).owner?.phone?.replace(/\D/g, '').slice(-10);
+      const engStatus = getEngagementStatus(property as any);
+      const followUp = getFollowUpStatus(property as any);
+
+      // Use message from follow-up status (PROMPT 3)
+      const message = followUp.message;
+
+      // Add owner name
+      const fullMessage = `Hi ${(property as any).owner?.name || 'Owner'},\n\n${message}\n\nProperty: ${property.title}\n\nLogin here: https://homilivo.com`;
+
+      const url = `https://wa.me/91${phone}?text=${encodeURIComponent(fullMessage)}`;
+      return { url, property };
+    });
+
+    // Store queue and open first link
+    setPendingWhatsAppLinks(links);
+    setCurrentWhatsAppIndex(0);
+    setShowFollowUpConfirm(false);
+    
+    // Open first WhatsApp link
+    window.open(links[0].url, '_blank', 'noopener,noreferrer');
+  };
+
+  /**
+   * PROMPT 3: Get properties that need follow-up
+   */
+  const getPropertiesNeedingFollowUp = () => {
+    return properties.filter(prop => {
+      const followUp = getFollowUpStatus(prop as any);
+      return followUp.status !== 'NONE';
+    });
+  };
   return <div className="min-h-screen bg-cream dark:bg-slate-950 pt-20 transition-colors duration-300">
       <RequestCorrectionModal isOpen={!!correctionProperty} onClose={() => setCorrectionProperty(null)} onConfirm={handleRequestCorrection} propertyTitle={correctionProperty?.title || ''} />
+      <AvailabilityTransitionDialog
+        isOpen={!!availabilityProperty}
+        onClose={() => setAvailabilityProperty(null)}
+        room={availabilityProperty}
+        initialStatus={availabilityDialogInitialStatus}
+        onConfirm={(room, status, reason) => {
+          handleAvailabilityAction(room, status, reason || 'Admin updated property availability');
+          setAvailabilityProperty(null);
+        }}
+      />
 
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 py-8 md:py-12">
@@ -85,7 +582,7 @@ export function AdminProperties() {
           <div className="flex items-center gap-4 w-full md:w-auto">
             <div className="relative flex-1 md:w-64">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-              <input type="text" placeholder="Search properties..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-navy focus:ring-1 focus:ring-navy dark:text-white shadow-sm" />
+              <input type="text" placeholder="Search properties..." value={searchInput} onChange={(e) => handleSearchChange(e.target.value)} className="w-full pl-10 pr-4 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl focus:outline-none focus:border-navy focus:ring-1 focus:ring-navy dark:text-white shadow-sm" />
 
             </div>
           </div>
@@ -94,10 +591,31 @@ export function AdminProperties() {
         {/* Filters */}
         <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-100 dark:border-slate-700 mb-6 overflow-hidden">
           <div className="flex overflow-x-auto no-scrollbar">
-            {['all', 'pending', 'needs_correction', 'approved', 'rejected', 'suspended'].map((status) => <button key={status} onClick={() => setFilterStatus(status)} className={`px-6 py-4 font-medium text-sm capitalize whitespace-nowrap transition-colors border-b-2 ${filterStatus === status ? 'border-navy dark:border-white text-navy dark:text-white bg-slate-50 dark:bg-slate-700/50' : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
+            {['all', 'pending', 'needs_correction', 'approved', 'rejected', 'suspended'].map((status) => <button key={status} onClick={() => handleFilterChange(status)} className={`px-6 py-4 font-medium text-sm capitalize whitespace-nowrap transition-colors border-b-2 ${filterStatus === status ? 'border-navy dark:border-white text-navy dark:text-white bg-slate-50 dark:bg-slate-700/50' : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>
 
                 {status === 'needs_correction' ? 'Needs Correction' : status}
               </button>)}
+          </div>
+          <div className="flex overflow-x-auto no-scrollbar border-t border-slate-100 dark:border-slate-700">
+            {[
+              ['all', 'All availability'],
+              ['AVAILABLE', 'Available'],
+              ['FILLED', 'Filled'],
+              ['OWNER_PAUSED', 'Paused'],
+              ['NEEDS_RECONFIRMATION', 'Needs Reconfirmation']
+            ].map(([status, label]) => (
+              <button
+                key={status}
+                onClick={() => handleAvailabilityFilterChange(status)}
+                className={`px-5 py-3 font-medium text-xs whitespace-nowrap transition-colors border-b-2 ${
+                  availabilityFilter === status
+                    ? 'border-emerald-600 text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/20'
+                    : 'border-transparent text-slate-600 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
         </div>
 
@@ -105,25 +623,74 @@ export function AdminProperties() {
         <div className="bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-100 dark:border-slate-700 overflow-hidden">
           {loading ? <div className="p-12 text-center">
               <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-navy dark:border-white mx-auto"></div>
-            </div> : filteredProperties.length > 0 ? <div className="overflow-x-auto">
+            </div> : properties.length > 0 ? <div className="overflow-x-auto">
               <table className="w-full text-left min-w-[800px]">
                 <thead className="bg-slate-50 dark:bg-slate-700/50 text-slate-500 dark:text-slate-400 text-xs uppercase tracking-wider">
                   <tr>
+                    <th className="px-4 py-4 w-12">
+                      <input
+                        type="checkbox"
+                        checked={
+                          properties.length > 0 &&
+                          selectedIds.size === properties.length
+                        }
+                        onChange={(e) => handleSelectAll(e.target.checked)}
+                        className="w-4 h-4 rounded cursor-pointer"
+                      />
+                    </th>
                     <th className="px-6 py-4 font-medium">Property</th>
                     <th className="px-6 py-4 font-medium">Location</th>
-                    <th className="px-6 py-4 font-medium">Price</th>
-                    <th className="px-6 py-4 font-medium">Status</th>
+                    {/* Sortable: Price */}
+                    <th 
+                      className="px-6 py-4 font-medium cursor-pointer hover:text-slate-700 dark:hover:text-slate-200 transition-colors group/header select-none"
+                      onClick={() => handleColumnSort('pricePerMonth')}
+                      title="Click to sort by price"
+                    >
+                      <div className="flex items-center">
+                        Price
+                        <SortIndicator column="pricePerMonth" />
+                      </div>
+                    </th>
+                    <th className="px-6 py-4 font-medium">Moderation</th>
+                    <th className="px-6 py-4 font-medium">Availability</th>
+                    {/* Sortable: Created At */}
+                    <th 
+                      className="px-6 py-4 font-medium cursor-pointer hover:text-slate-700 dark:hover:text-slate-200 transition-colors group/header select-none"
+                      onClick={() => handleColumnSort('createdAt')}
+                      title="Click to sort by creation date"
+                    >
+                      <div className="flex items-center">
+                        Created
+                        <SortIndicator column="createdAt" />
+                      </div>
+                    </th>
+                    <th className="px-6 py-4 font-medium">Last Contacted</th>
+                    <th className="px-6 py-4 font-medium">Attempts</th>
+                    <th className="px-6 py-4 font-medium">Last Login</th>
+                    <th className="px-6 py-4 font-medium">Last Updated</th>
+                    <th className="px-6 py-4 font-medium">Engagement</th>
+                    <th className="px-6 py-4 font-medium">Follow-up</th>
                     <th className="px-6 py-4 font-medium text-right">
                       Actions
                     </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-700">
-                  {filteredProperties.map((property) => {
+                  {properties.map((property) => {
                 const status = property.reviewStatus || (property as any).status || 'approved';
                 const hasFeedback = property.adminFeedback;
                 return <tr key={property.id} className="hover:bg-slate-50/50 dark:hover:bg-slate-700/30 transition-colors group">
 
+                        <td className="px-4 py-4">
+                          <input
+                            type="checkbox"
+                            checked={selectedIds.has(property.id)}
+                            onChange={(e) =>
+                              handleSelectProperty(property.id, e.target.checked)
+                            }
+                            className="w-4 h-4 rounded cursor-pointer"
+                          />
+                        </td>
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-4">
                             <img src={property.images[0]} alt="" loading="lazy" className="w-14 h-14 rounded-lg object-cover bg-slate-100 dark:bg-slate-700" />
@@ -165,6 +732,157 @@ export function AdminProperties() {
                                 </span>}
                           </div>
                         </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col gap-2 items-start">
+                            {getAvailabilityBadge(property)}
+                            <div className="flex flex-wrap gap-1">
+                              {(property.allowedAvailabilityTransitions || []).includes('FILLED') && (
+                                <button
+                                  onClick={() => {
+                                    setAvailabilityDialogInitialStatus('FILLED');
+                                    setAvailabilityProperty(property);
+                                  }}
+                                  className="px-2 py-1 text-[11px] font-medium rounded-md bg-red-50 text-red-700 hover:bg-red-100 dark:bg-red-900/20 dark:text-red-300"
+                                >
+                                  Next Available Date
+                                </button>
+                              )}
+                              {(property.allowedAvailabilityTransitions || []).includes('AVAILABLE') && (
+                                <button
+                                  onClick={() => {
+                                    setAvailabilityDialogInitialStatus('AVAILABLE');
+                                    setAvailabilityProperty(property);
+                                  }}
+                                  className="px-2 py-1 text-[11px] font-medium rounded-md bg-green-50 text-green-700 hover:bg-green-100 dark:bg-green-900/20 dark:text-green-300"
+                                >
+                                  Available Now
+                                </button>
+                              )}
+                              {(property.allowedAvailabilityTransitions || []).includes('OWNER_PAUSED') && (
+                                <button
+                                  onClick={() => {
+                                    setAvailabilityDialogInitialStatus('OWNER_PAUSED');
+                                    setAvailabilityProperty(property);
+                                  }}
+                                  className="px-2 py-1 text-[11px] font-medium rounded-md bg-yellow-50 text-yellow-700 hover:bg-yellow-100 dark:bg-yellow-900/20 dark:text-yellow-300"
+                                >
+                                  Pause Listing
+                                </button>
+                              )}
+                              {(property.allowedAvailabilityTransitions || []).includes('NEEDS_RECONFIRMATION') && (
+                                <button
+                                  onClick={() => {
+                                    setAvailabilityDialogInitialStatus('NEEDS_RECONFIRMATION');
+                                    setAvailabilityProperty(property);
+                                  }}
+                                  className="px-2 py-1 text-[11px] font-medium rounded-md bg-blue-50 text-blue-700 hover:bg-blue-100 dark:bg-blue-900/20 dark:text-blue-300"
+                                >
+                                  Needs Reconfirmation
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        {/* Created Column */}
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                            <Clock className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                            <span
+                              title={getTimeTooltip(property.createdAt)}
+                              className="text-sm font-medium text-navy dark:text-white"
+                            >
+                              {getRelativeTime(property.createdAt)}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                            <Clock className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                            <span
+                              title={getTimeTooltip(property.lastContactedAt)}
+                              className="text-sm font-medium text-navy dark:text-white"
+                            >
+                              {getRelativeTime(property.lastContactedAt)}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2">
+                            <MessageCircle className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                            <span
+                              title={`${property.contactCount || 0} contact attempt(s)`}
+                              className="text-sm font-medium text-navy dark:text-white bg-slate-100 dark:bg-slate-700 px-2.5 py-1 rounded-full"
+                            >
+                              {property.contactCount || 0}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                            <Clock className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                            <span
+                              title={getTimeTooltip((property as any).lastLoginAt)}
+                              className="text-sm font-medium text-navy dark:text-white"
+                            >
+                              {getRelativeTime((property as any).lastLoginAt)}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                            <TrendingUp className="w-4 h-4 text-slate-400 flex-shrink-0" />
+                            <span
+                              title={getTimeTooltip((property as any).lastPropertyUpdateAt)}
+                              className="text-sm font-medium text-navy dark:text-white"
+                            >
+                              {getRelativeTime((property as any).lastPropertyUpdateAt)}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          {(() => {
+                            const engStatus = getEngagementStatus(property as any);
+                            const badge = getEngagementBadge(engStatus);
+                            return (
+                              <span className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap inline-flex items-center gap-1 ${badge.style}`}>
+                                {badge.label}
+                              </span>
+                            );
+                          })()}
+                        </td>
+                        <td className="px-6 py-4">
+                          {(() => {
+                            const followUp = getFollowUpStatus(property as any);
+                            const badge = getFollowUpBadge(followUp.status);
+                            return (
+                              <div className="flex flex-col items-start gap-1">
+                                <span
+                                  className={`px-3 py-1 rounded-full text-xs font-medium whitespace-nowrap inline-flex items-center gap-1 ${badge.style}`}
+                                  title={followUp.message}
+                                >
+                                  {badge.label}
+                                </span>
+                                {followUp.status !== 'NONE' && (
+                                  <input
+                                    type="checkbox"
+                                    checked={followUpSelectedIds.has(property.id)}
+                                    onChange={(e) => {
+                                      const newSet = new Set(followUpSelectedIds);
+                                      if (e.target.checked) {
+                                        newSet.add(property.id);
+                                      } else {
+                                        newSet.delete(property.id);
+                                      }
+                                      setFollowUpSelectedIds(newSet);
+                                    }}
+                                    className="w-4 h-4 rounded cursor-pointer"
+                                    title="Select for follow-up WhatsApp"
+                                  />
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </td>
                         <td className="px-6 py-4 text-right">
                           <div className="flex items-center justify-end gap-2">
                             {status === 'pending' && <button onClick={() => setCorrectionProperty(property)} className="px-3 py-1.5 text-xs font-medium text-orange-700 dark:text-orange-400 bg-orange-50 dark:bg-orange-900/20 hover:bg-orange-100 dark:hover:bg-orange-900/30 rounded-lg transition-colors whitespace-nowrap">
@@ -193,6 +911,226 @@ export function AdminProperties() {
               </p>
             </div>}
         </div>
+
+        {/* Pagination Controls */}
+        {properties.length > 0 && (
+          <div className="mt-6 bg-white dark:bg-slate-800 rounded-xl shadow-sm border border-slate-100 dark:border-slate-700 p-6">
+            <div className="flex flex-col sm:flex-row justify-between items-center gap-4">
+              {/* Info and Rows Per Page Controls */}
+              <div className="flex flex-col sm:flex-row items-start sm:items-center gap-4">
+                <div className="text-sm text-slate-600 dark:text-slate-300">
+                  <span className="font-medium">
+                    {propertiesMeta && `Page ${propertiesMeta.page} of ${propertiesMeta.totalPages || 1}`}
+                  </span>
+                  {propertiesMeta && (
+                    <span className="text-slate-500 dark:text-slate-400 ml-4">
+                      Total: <span className="font-medium text-navy dark:text-white">{propertiesMeta.total}</span> properties
+                    </span>
+                  )}
+                </div>
+
+                {/* Rows Per Page Selector */}
+                <div className="flex items-center gap-2">
+                  <label htmlFor="limit-select" className="text-sm text-slate-600 dark:text-slate-300 font-medium whitespace-nowrap">
+                    Rows per page:
+                  </label>
+                  <select
+                    id="limit-select"
+                    value={limit}
+                    onChange={(e) => handleLimitChange(Number(e.target.value))}
+                    disabled={loading}
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 shadow-sm outline-none transition focus:border-navy focus:ring-1 focus:ring-navy dark:focus:border-white dark:focus:ring-white cursor-pointer hover:border-slate-300 dark:hover:border-slate-600"
+                  >
+                    <option value={10}>10</option>
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                  </select>
+                </div>
+
+                {/* Sort Selector */}
+                <div className="flex items-center gap-2">
+                  <label htmlFor="sort-select" className="text-sm text-slate-600 dark:text-slate-300 font-medium whitespace-nowrap">
+                    Sort by:
+                  </label>
+                  <select
+                    id="sort-select"
+                    value={sort}
+                    onChange={(e) => handleSortChange(e.target.value)}
+                    disabled={loading}
+                    className="rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 px-3 py-2 text-sm font-medium text-slate-700 dark:text-slate-300 shadow-sm outline-none transition focus:border-navy focus:ring-1 focus:ring-navy dark:focus:border-white dark:focus:ring-white cursor-pointer hover:border-slate-300 dark:hover:border-slate-600"
+                  >
+                    <option value="createdAt_desc">Latest</option>
+                    <option value="createdAt_asc">Oldest</option>
+                    <option value="price_asc">Price: Low to High</option>
+                    <option value="price_desc">Price: High to Low</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Navigation Buttons */}
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                  disabled={currentPage === 1 || loading}
+                  className="px-4 py-2 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  ← Previous
+                </button>
+                <button
+                  onClick={() => setCurrentPage(currentPage + 1)}
+                  disabled={!propertiesMeta || currentPage >= (propertiesMeta.totalPages || 1) || loading}
+                  className="px-4 py-2 text-sm font-medium rounded-lg border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-300 bg-white dark:bg-slate-800 hover:bg-slate-50 dark:hover:bg-slate-700/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  Next →
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Bulk Actions Toolbar - Selection Mode */}
+        {selectedIds.size > 0 && pendingWhatsAppLinks.length === 0 && (
+          <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 px-6 py-4 flex justify-between items-center shadow-lg z-40">
+            <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
+              Selected: {selectedIds.size} property
+              {selectedIds.size !== 1 ? 'ies' : ''}
+            </span>
+
+            <div className="flex gap-2">
+              <button
+                onClick={handleBulkWhatsApp}
+                className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Send WhatsApp
+              </button>
+
+              <button
+                onClick={() => setSelectedIds(new Set())}
+                className="bg-gray-200 dark:bg-slate-700 hover:bg-gray-300 dark:hover:bg-slate-600 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Clear
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* PROMPT 3: Follow-up Actions Toolbar */}
+        {(() => {
+          const needsFollowUp = getPropertiesNeedingFollowUp();
+          return followUpSelectedIds.size > 0 && pendingWhatsAppLinks.length === 0 ? (
+            <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 px-6 py-4 flex justify-between items-center shadow-lg z-40 translate-y-[calc(-100%*var(--follow-up-multiple,1))]" style={{ bottom: selectedIds.size > 0 ? '60px' : '0' }}>
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                Selected for follow-up: {followUpSelectedIds.size} property
+                {followUpSelectedIds.size !== 1 ? 'ies' : ''}
+              </span>
+
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setShowFollowUpConfirm(true)}
+                  className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-2"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  Send Follow-up
+                </button>
+
+                <button
+                  onClick={() => setFollowUpSelectedIds(new Set())}
+                  className="bg-gray-200 dark:bg-slate-700 hover:bg-gray-300 dark:hover:bg-slate-600 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+                >
+                  Clear
+                </button>
+              </div>
+            </div>
+          ) : null;
+        })()}
+
+        {/* WhatsApp Queue Toolbar - Sequential Mode */}
+        {pendingWhatsAppLinks.length > 0 && (
+          <div className="fixed bottom-0 left-0 right-0 bg-white dark:bg-slate-800 border-t border-slate-200 dark:border-slate-700 px-6 py-4 flex justify-between items-center shadow-lg z-40">
+            <div className="flex items-center gap-4">
+              <span className="text-sm font-medium text-slate-700 dark:text-slate-300">
+                Opening: {currentWhatsAppIndex + 1} of {pendingWhatsAppLinks.length}
+              </span>
+              <span className="text-xs text-slate-500 dark:text-slate-400 max-w-xs truncate">
+                {pendingWhatsAppLinks[currentWhatsAppIndex]?.property.title}
+              </span>
+            </div>
+
+            <div className="flex gap-2">
+              <button
+                onClick={handleOpenNextWhatsApp}
+                className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Next →
+              </button>
+
+              <button
+                onClick={handleSkipWhatsApp}
+                className="bg-yellow-600 hover:bg-yellow-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Skip
+              </button>
+
+              <button
+                onClick={clearWhatsAppQueue}
+                className="bg-gray-200 dark:bg-slate-700 hover:bg-gray-300 dark:hover:bg-slate-600 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-lg text-sm font-medium transition-colors"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* PROMPT 3: Follow-up Confirmation Modal */}
+        {showFollowUpConfirm && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+            <div className="bg-white dark:bg-slate-800 rounded-xl shadow-xl max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+              <div className="p-6 border-b border-slate-200 dark:border-slate-700">
+                <h2 className="text-xl font-bold text-navy dark:text-white">
+                  Send Follow-up WhatsApp to {followUpSelectedIds.size} Owner{followUpSelectedIds.size !== 1 ? 's' : ''}?
+                </h2>
+                <p className="text-sm text-slate-500 dark:text-slate-400 mt-1">
+                  Personalized messages will be sent based on their engagement status
+                </p>
+              </div>
+
+              <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+                {properties.map(prop => {
+                  if (!followUpSelectedIds.has(prop.id)) return null;
+                  const followUp = getFollowUpStatus(prop as any);
+                  return (
+                    <div key={prop.id} className="p-4 bg-slate-50 dark:bg-slate-700/30 rounded-lg border border-slate-200 dark:border-slate-700">
+                      <div className="flex justify-between items-start mb-2">
+                        <h3 className="font-semibold text-slate-900 dark:text-white">{prop.title}</h3>
+                        <span className={`text-xs px-2 py-1 rounded-full ${getFollowUpBadge(followUp.status).style}`}>
+                          {getFollowUpBadge(followUp.status).label}
+                        </span>
+                      </div>
+                      <p className="text-sm text-slate-600 dark:text-slate-400">Owner: {(prop as any).owner?.name}</p>
+                      <p className="text-xs text-slate-500 dark:text-slate-500 mt-2 italic">Message: {followUp.message}</p>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div className="p-6 border-t border-slate-200 dark:border-slate-700 flex gap-3">
+                <button
+                  onClick={handleFollowUpWhatsApp}
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2.5 rounded-lg font-medium transition-colors flex items-center justify-center gap-2"
+                >
+                  <MessageCircle className="w-4 h-4" />
+                  Send to All
+                </button>
+                <button
+                  onClick={() => setShowFollowUpConfirm(false)}
+                  className="flex-1 bg-slate-200 dark:bg-slate-700 hover:bg-slate-300 dark:hover:bg-slate-600 text-slate-700 dark:text-slate-300 px-4 py-2.5 rounded-lg font-medium transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>;
 }

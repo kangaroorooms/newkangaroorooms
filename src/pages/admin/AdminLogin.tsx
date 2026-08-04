@@ -1,7 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useAppDispatch, useAppSelector } from '../../src/store/hooks';
-import { login, clearError } from '../../src/store/slices/auth.slice';
+import { useAppDispatch, useAppSelector } from '../../store/hooks';
+import { login, clearError } from '../../store/slices/auth.slice';
 import { Button } from '../../components/ui/Button';
 export function AdminLogin() {
   const navigate = useNavigate();

@@ -1,8 +1,8 @@
 import React, { useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useAppDispatch } from '../src/store/hooks';
-import { updateUser } from '../src/store/slices/auth.slice';
-import { showToast } from '../src/store/slices/ui.slice';
+import { useAppDispatch } from '../store/hooks';
+import { updateUser } from '../store/slices/auth.slice';
+import { showToast } from '../store/slices/ui.slice';
 /**
  * GOOGLE OAUTH CALLBACK PAGE
  *
@@ -23,6 +23,7 @@ export function GoogleCallback() {
   useEffect(() => {
     const token = searchParams.get('token');
     const error = searchParams.get('error');
+    const redirect = searchParams.get('redirect');
     if (error) {
       // OAuth failed
       dispatch(showToast({
@@ -72,19 +73,24 @@ export function GoogleCallback() {
         message: 'Successfully signed in with Google!',
         type: 'success'
       }));
-      // Redirect based on role
-      const userRole = payload.role?.toUpperCase();
-      if (userRole === 'ADMIN') {
-        window.location.href = '/admin';
-      } else if (userRole === 'OWNER') {
-        window.location.href = '/dashboard';
-      } else if (userRole === 'AGENT') {
-        window.location.href = '/agent/dashboard';
+      // Use redirect if provided, otherwise fallback to role-based dashboard
+      if (redirect) {
+        const decodedRedirect = decodeURIComponent(redirect);
+        window.location.href = decodedRedirect;
       } else {
-        window.location.href = '/rooms';
+        // Redirect based on role
+        const userRole = payload.role?.toUpperCase();
+        if (userRole === 'ADMIN') {
+          window.location.href = '/admin';
+        } else if (userRole === 'OWNER') {
+          window.location.href = '/owner/dashboard';
+        } else if (userRole === 'AGENT') {
+          window.location.href = '/agent/dashboard';
+        } else {
+          window.location.href = '/rooms';
+        }
       }
-    } catch (error) {
-      console.error('Error processing Google OAuth callback:', error);
+    } catch {
       dispatch(showToast({
         message: 'Failed to process authentication. Please try again.',
         type: 'error'

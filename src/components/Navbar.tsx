@@ -1,77 +1,158 @@
-import React, { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import ReactDOM from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { Menu, X, LogOut, User, ChevronRight } from "lucide-react";
-import { useAppSelector, useAppDispatch } from "../src/store/hooks";
-import { logout } from "../src/store/slices/auth.slice";
+import {
+  Menu,
+  X,
+  LogOut,
+  User,
+  LayoutDashboard,
+  ChevronRight,
+} from "lucide-react";
+import { useAppDispatch } from "../store/hooks";
+import { logout } from "../store/slices/auth.slice";
 import { ThemeToggle } from "./ThemeToggle";
+import { PhoneModal } from "./PhoneModal";
+import { OwnerUpgradeConfirmModal } from "./OwnerUpgradeConfirmModal";
+import { useListPropertyAction } from "../hooks/useListPropertyAction";
+import { handleGoogleAuthNavigation } from "../pages/Login";
+
 export function Navbar() {
   const [isOpen, setIsOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
+  const [showPhoneModal, setShowPhoneModal] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
+
+  const {
+    user,
+    shouldShowListProperty,
+    handleListPropertyClick,
+    isUpgradingToOwner,
+    isOwnerUpgradeConfirmOpen,
+    closeOwnerUpgradeConfirm,
+    confirmOwnerUpgrade,
+  } = useListPropertyAction({
+    onRequirePhone: () => setShowPhoneModal(true),
+  });
+
+  const userRole = user?.role?.toUpperCase();
   const location = useLocation();
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
-  const {
-    user
-  } = useAppSelector((state) => state.auth);
+  // const { user } = useAppSelector((state) => state.auth);
+
   const isAuthPage = location.pathname.includes("/auth");
   const isHomePage = location.pathname === "/";
+  // const userRole = user?.role?.toUpperCase();
+
+  // const shouldShowListProperty = userRole !== "OWNER";
+
+  const isTransparent = useMemo(() => {
+    return isHomePage && !scrolled && !isOpen;
+  }, [isHomePage, scrolled, isOpen]);
+
+  const isActive = (path: string) => {
+    if (path === "/") return location.pathname === "/";
+    return location.pathname.startsWith(path);
+  };
+
+  const isListPropertyActive = () => {
+    return (
+      location.pathname === "/list-property" ||
+      location.pathname === "/become-owner" ||
+      location.pathname === "/auth/register-owner"
+    );
+  };
+
+  // ===== Desktop nav item styles =====
+  // ===== Desktop nav item styles =====
+  const navLinkClass = (active: boolean) =>
+    [
+      "group relative inline-flex items-center justify-center h-10 rounded-full px-4 text-sm font-medium transition-all duration-300",
+      "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gold/40",
+      active
+        ? "text-gold bg-gold/10 shadow-[0_0_0_1px_rgba(212,175,55,0.15)]"
+        : "text-slate-700 dark:text-slate-200 hover:text-gold dark:hover:text-gold hover:bg-slate-100/80 dark:hover:bg-gold/10",
+    ].join(" ");
+
+  const navUnderlineClass = (active: boolean) =>
+    [
+      "after:absolute after:left-1/2 after:-translate-x-1/2 after:-bottom-[4px]",
+      "after:h-[2px] after:rounded-full after:bg-gold after:transition-all after:duration-300",
+      active
+        ? "after:w-6 after:opacity-100"
+        : "after:w-0 after:opacity-0 group-hover:after:w-6 group-hover:after:opacity-100",
+    ].join(" ");
+
+  // ===== Mobile nav item styles =====
+  const mobileNavClass = (active: boolean) =>
+    [
+      "group flex w-full items-center justify-between rounded-2xl px-4 py-3.5 text-sm font-medium transition-all duration-200",
+      active
+        ? "bg-gold/10 text-gold shadow-[0_0_0_1px_rgba(212,175,55,0.18)]"
+        : "text-slate-800 dark:text-slate-100 hover:text-gold dark:hover:text-gold hover:bg-slate-100 dark:hover:bg-gold/10",
+    ].join(" ");
+
   useEffect(() => {
     const handleScroll = () => {
-      setScrolled(window.scrollY > 20);
+      setScrolled(window.scrollY > 10);
     };
-    window.addEventListener("scroll", handleScroll, {
-      passive: true
-    });
+
+    handleScroll();
+    window.addEventListener("scroll", handleScroll);
+
     return () => window.removeEventListener("scroll", handleScroll);
   }, []);
+
   useEffect(() => {
     setIsOpen(false);
   }, [location.pathname]);
 
-  // useEffect(() => {
-  //   if (isOpen) {
-  //     document.body.style.overflow = 'hidden';
-  //   } else {
-  //     document.body.style.overflow = '';
-  //   }
-  //   return () => {
-  //     document.body.style.overflow = '';
-  //   };
-  // }, [isOpen]);
-  useEffect(() => {
-    if (!isOpen) return;
-
-    // store original overflow value
-    const originalOverflow = document.body.style.overflow;
-
-    // lock scroll when mobile menu is open
-    document.body.style.overflow = 'hidden';
-    return () => {
-      // restore original value correctly
-      document.body.style.overflow = originalOverflow || 'auto';
-    };
-  }, [isOpen]);
   if (isAuthPage) return null;
-  const userRole = user?.role?.toUpperCase();
+
   const handleLogout = () => {
     dispatch(logout());
     navigate("/");
   };
+
+  const handleMobileGoogleClick = async () => {
+    if (isGoogleLoading) return;
+
+    await handleGoogleAuthNavigation({
+      location,
+      setGoogleLoading: setIsGoogleLoading,
+    });
+  };
+
+  // const handleListPropertyClick = () => {
+  //   if (!user) {
+  //     setShowPhoneModal(true);
+  //     return;
+  //   }
+
+  //   if (user.role?.toUpperCase() === "OWNER") {
+  //     navigate("/owner/dashboard");
+  //     return;
+  //   }
+
+  //   setShowPhoneModal(true);
+  // };
+
   const getDashboardLink = () => {
     switch (userRole) {
       case "ADMIN":
         return "/admin";
       case "OWNER":
-        return "/dashboard";
+        return "/owner/dashboard";
       case "TENANT":
         return "/tenant/dashboard";
       case "AGENT":
         return "/agent/dashboard";
       default:
-        return "/dashboard";
+        return "/owner/dashboard";
     }
   };
+
   const getDashboardLabel = () => {
     switch (userRole) {
       case "ADMIN":
@@ -86,146 +167,292 @@ export function Navbar() {
         return "Dashboard";
     }
   };
-  const isTransparent = isHomePage && !scrolled && window.innerWidth >= 768;
 
-  // ✅ Mobile menu rendered via portal to escape nav's stacking context
-  const mobileMenu = ReactDOM.createPortal(<>
+  const dashboardLink = userRole ? getDashboardLink() : "";
+  const dashboardLabel = userRole ? getDashboardLabel() : "";
+
+  const mobileMenu = ReactDOM.createPortal(
+    <>
       {/* Overlay */}
-      <div className={`fixed inset-0 bg-black/40 backdrop-blur-sm z-[9998] md:hidden transition-opacity duration-300 ${isOpen ? "opacity-100 pointer-events-auto" : "opacity-0 pointer-events-none"}`} onClick={() => setIsOpen(false)} />
+      <div
+        className={`fixed inset-0 bg-slate-950/45 backdrop-blur-[2px] z-40 transition-opacity duration-300 ${
+          isOpen
+            ? "opacity-100 pointer-events-auto"
+            : "opacity-0 pointer-events-none"
+        }`}
+        onClick={() => setIsOpen(false)}
+      />
 
-      {/* Slide-in Panel */}
-      <div style={{
-      paddingTop: "env(safe-area-inset-top)",
-      paddingBottom: "env(safe-area-inset-bottom)"
-    }} className={`fixed top-0 right-0 h-full w-[85vw] max-w-sm bg-white dark:bg-slate-900 shadow-2xl z-[9999] md:hidden transform transition-transform duration-300 ease-out flex flex-col ${isOpen ? "translate-x-0" : "translate-x-full"}`}>
-        <div className="p-6 border-b border-slate-100 dark:border-slate-800 flex justify-between items-center">
-          <span className="font-playfair font-bold text-xl text-navy dark:text-white">
-            Menu
-          </span>
-          <button onClick={() => setIsOpen(false)} className="p-2 -mr-2 text-slate-400 hover:text-navy dark:hover:text-white">
-            <X className="w-6 h-6" />
-          </button>
-        </div>
+      {/* Drawer */}
+      <div
+        className={`fixed right-0 top-0 h-full w-[86vw] max-w-sm z-50 transform transition-transform duration-300 ease-out ${
+          isOpen ? "translate-x-0" : "translate-x-full"
+        }`}
+      >
+        <div
+          className="flex h-full flex-col border-l border-slate-200/70 bg-white/95 shadow-2xl backdrop-blur-xl dark:border-white/10 dark:bg-slate-950/95"
+          style={{
+            paddingTop: "env(safe-area-inset-top)",
+            paddingBottom: "env(safe-area-inset-bottom)",
+          }}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between border-b border-slate-200/70 px-5 py-4 dark:border-white/10">
+            <Link
+              to="/"
+              className="text-lg font-semibold tracking-tight text-slate-900 dark:text-white"
+            >
+              Homilivo
+            </Link>
 
-        <div className="flex-1 overflow-y-auto py-6 px-4 space-y-2">
-          <Link to="/rooms" className="flex items-center justify-between p-3 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-navy dark:hover:text-white transition-colors">
-            <span className="font-medium">Find a Room</span>
-            <ChevronRight className="w-4 h-4 opacity-50" />
-          </Link>
+            <button
+              onClick={() => setIsOpen(false)}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-700 transition hover:scale-[1.03] hover:bg-slate-50 dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10"
+              aria-label="Close menu"
+            >
+              <X className="h-5 w-5" />
+            </button>
+          </div>
 
-          {userRole ? <Link to={getDashboardLink()} className="flex items-center justify-between p-3 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-navy dark:hover:text-white transition-colors">
-              <span className="font-medium">{getDashboardLabel()}</span>
-              <ChevronRight className="w-4 h-4 opacity-50" />
-            </Link> : <Link to="/owners" className="flex items-center justify-between p-3 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-navy dark:hover:text-white transition-colors">
-              <span className="font-medium">List Property</span>
-              <ChevronRight className="w-4 h-4 opacity-50" />
-            </Link>}
+          {/* Body */}
+          <div className="flex-1 space-y-2 px-4 py-5">
+            <Link to="/rooms" className={mobileNavClass(isActive("/rooms"))}>
+              <span>Find a Room</span>
+              <ChevronRight className="h-4 w-4 opacity-60 transition group-hover:translate-x-0.5" />
+            </Link>
 
-          <Link to="/about" className="flex items-center justify-between p-3 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-800 hover:text-navy dark:hover:text-white transition-colors">
-            <span className="font-medium">About Us</span>
-            <ChevronRight className="w-4 h-4 opacity-50" />
-          </Link>
-
-          <div className="my-4 border-t border-slate-100 dark:border-slate-800" />
-
-          {user ? <>
-              <Link to="/profile" className="flex items-center gap-3 p-3 rounded-xl text-navy dark:text-white hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
-                <div className="w-10 h-10 rounded-full bg-gold/20 flex items-center justify-center text-gold">
-                  <User className="w-5 h-5" />
-                </div>
-                <div>
-                  <p className="font-bold text-sm">{user.name}</p>
-                  <p className="text-xs text-slate-500">View Profile</p>
-                </div>
-              </Link>
-              <button onClick={() => {
-            handleLogout();
-            setIsOpen(false);
-          }} className="w-full flex items-center gap-3 p-3 rounded-xl text-red-600 hover:bg-red-50 dark:hover:bg-red-900/10 transition-colors text-left">
-                <LogOut className="w-5 h-5" />
-                <span className="font-medium">Logout</span>
+            {shouldShowListProperty && (
+              <button
+                onClick={handleListPropertyClick}
+                className={mobileNavClass(isListPropertyActive())}
+              >
+                <span>List Property</span>
+                <ChevronRight className="h-4 w-4 opacity-60 transition group-hover:translate-x-0.5" />
               </button>
-            </> : <div className="space-y-3 pt-2">
-              <Link to="/auth/login" className="block w-full py-3 px-4 text-center font-bold text-navy dark:text-white border border-slate-200 dark:border-slate-700 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-800 transition-colors">
-                Login
+            )}
+
+            {userRole && (
+              <Link
+                to={dashboardLink}
+                className={mobileNavClass(isActive(dashboardLink))}
+              >
+                <span>{dashboardLabel}</span>
+                <ChevronRight className="h-4 w-4 opacity-60 transition group-hover:translate-x-0.5" />
               </Link>
-              <Link to="/rooms" className="block w-full py-3 px-4 text-center font-bold text-navy bg-gold rounded-xl hover:bg-yellow-500 transition-colors shadow-lg shadow-gold/20">
-                Book Now
-              </Link>
-            </div>}
+            )}
+
+            <div className="rounded-3xl border border-slate-200/70 bg-slate-50/80 p-4 text-sm text-slate-600 dark:border-slate-800 dark:bg-slate-900/70 dark:text-slate-300">
+              <p className="font-semibold text-slate-900 dark:text-white">Welcome to Homilivo</p>
+              <p className="mt-1 text-sm text-slate-500 dark:text-slate-400">
+                Sign in quickly to save places and manage your rentals.
+              </p>
+            </div>
+
+            <Link to="/rooms" className={mobileNavClass(isActive("/rooms"))}>
+              <span>Saved Properties</span>
+              <ChevronRight className="h-4 w-4 opacity-60 transition group-hover:translate-x-0.5" />
+            </Link>
+
+            <Link to="/contact" className={mobileNavClass(isActive("/contact"))}>
+              <span>Support</span>
+              <ChevronRight className="h-4 w-4 opacity-60 transition group-hover:translate-x-0.5" />
+            </Link>
+          </div>
+
+          {/* Footer */}
+          <div className="space-y-3 border-t border-slate-200/70 px-4 py-4 dark:border-white/10">
+            {user ? (
+              <div className="space-y-2">
+                <Link
+                  to="/profile"
+                  className="flex items-center justify-between rounded-2xl border border-slate-200/70 px-4 py-3 transition hover:bg-slate-50 dark:border-white/10 dark:hover:bg-white/5"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gold/10 text-gold">
+                      <User className="h-4 w-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-slate-900 dark:text-white">
+                        {user.name}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        View profile
+                      </p>
+                    </div>
+                  </div>
+                  <ChevronRight className="h-4 w-4 text-slate-400" />
+                </Link>
+
+                <button
+                  onClick={handleLogout}
+                  className="flex w-full items-center justify-center gap-2 rounded-2xl border border-red-200/70 px-4 py-3 text-sm font-medium text-red-600 transition hover:bg-red-50 dark:border-red-500/20 dark:text-red-400 dark:hover:bg-red-500/10"
+                >
+                  <LogOut className="h-4 w-4" />
+                  Logout
+                </button>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  onClick={handleMobileGoogleClick}
+                  disabled={isGoogleLoading}
+                  className="flex w-full items-center justify-center rounded-2xl bg-slate-950 px-4 py-3 text-sm font-semibold text-white transition hover:scale-[1.01] hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-slate-950 dark:hover:bg-slate-100"
+                >
+                  {isGoogleLoading ? "Connecting…" : "Continue with Google"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsOpen(false);
+                    navigate("/auth/login");
+                  }}
+                  className="flex w-full items-center justify-center rounded-2xl border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:border-gold/40 hover:bg-gold/5 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  Continue with Email
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsOpen(false);
+                    navigate("/auth/register");
+                  }}
+                  className="flex w-full items-center justify-center rounded-2xl border border-dashed border-slate-300 px-4 py-3 text-sm font-semibold text-slate-600 transition hover:border-gold/40 hover:text-gold dark:border-slate-700 dark:text-slate-300"
+                >
+                  Create Account
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
-    </>, document.body // ✅ Portaled outside <nav>, no stacking context issues
+    </>,
+    document.body,
   );
-  return <>
-      <nav style={{
-      paddingTop: "env(safe-area-inset-top)"
-    }} className={`fixed top-0 left-0 right-0 z-50 transition-all duration-300 ${isTransparent ? "bg-white/95 md:bg-transparent dark:bg-slate-900/95" : "bg-white/95 dark:bg-slate-900/95 backdrop-blur-md border-b border-slate-200/60 dark:border-slate-800/60 shadow-sm"}`}>
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 min-h-[64px] md:min-h-[80px] flex items-center justify-between">
-          {" "}
-          {/* Logo */}
-          <Link to="/" className="flex items-center gap-2 group flex-shrink-0">
-            <div className="w-9 h-9 bg-navy dark:bg-white rounded-tr-xl rounded-bl-xl flex items-center justify-center transition-transform group-hover:scale-110 duration-300 shadow-lg shadow-navy/10">
-              <span className="text-gold dark:text-navy font-playfair font-bold text-xl">
-                H
-              </span>
-            </div>
-            <span className={`font-playfair font-bold text-xl tracking-tight transition-colors ${isTransparent ? "text-white" : "text-navy dark:text-white"}`}>
+
+  return (
+    <>
+      <nav
+        className={`w-full transition-all duration-300 ${
+          isTransparent
+            ? "bg-transparent"
+            : "border-b border-slate-200/70 bg-white/80 shadow-sm backdrop-blur-xl dark:border-white/10 dark:bg-slate-950/75"
+        }`}
+      >
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6">
+          {/* Brand */}
+          <Link to="/" className="group inline-flex items-center gap-2">
+            <span className="text-lg font-bold tracking-tight text-slate-900 dark:text-white">
               Homilivo
             </span>
           </Link>
-          {/* Desktop Menu */}
-          <div className="hidden md:flex items-center gap-8">
-            <Link to="/rooms" className={`text-sm font-medium transition-colors hover:text-gold ${isTransparent ? "text-slate-200" : "text-slate-600 dark:text-slate-300"}`}>
+
+          {/* Desktop */}
+          <div className="hidden md:flex items-center gap-2">
+            <Link
+              to="/rooms"
+              className={`${navLinkClass(
+                isActive("/rooms"),
+              )} ${navUnderlineClass(isActive("/rooms"))}`}
+            >
               Find a Room
             </Link>
 
-            {userRole ? <Link to={getDashboardLink()} className={`text-sm font-medium transition-colors hover:text-gold ${isTransparent ? "text-slate-200" : "text-slate-600 dark:text-slate-300"}`}>
-                {getDashboardLabel()}
-              </Link> : <Link to="/owners" className={`text-sm font-medium transition-colors hover:text-gold ${isTransparent ? "text-slate-200" : "text-slate-600 dark:text-slate-300"}`}>
+            {shouldShowListProperty && (
+              <button
+                onClick={handleListPropertyClick}
+                className={`${navLinkClass(
+                  isListPropertyActive(),
+                )} ${navUnderlineClass(isListPropertyActive())}`}
+              >
                 List Property
-              </Link>}
+              </button>
+            )}
 
-            <Link to="/about" className={`text-sm font-medium transition-colors hover:text-gold ${isTransparent ? "text-slate-200" : "text-slate-600 dark:text-slate-300"}`}>
+            {userRole && (
+              <Link
+                to={dashboardLink}
+                className={`${navLinkClass(
+                  isActive(dashboardLink),
+                )} ${navUnderlineClass(isActive(dashboardLink))}`}
+              >
+                <span className="inline-flex items-center gap-2">
+                  <LayoutDashboard className="h-4 w-4" />
+                  {dashboardLabel}
+                </span>
+              </Link>
+            )}
+
+            {/* <Link
+              to="/about"
+              className={`${navLinkClass(isActive("/about"))} ${navUnderlineClass(
+                isActive("/about")
+              )}`}
+            >
               About
-            </Link>
+            </Link> */}
 
-            <div className="h-6 w-px bg-slate-200/50 dark:bg-slate-700/50 mx-2" />
+            <div className="mx-1 h-6 w-px bg-slate-200 dark:bg-white/10" />
 
             <ThemeToggle />
 
-            {user ? <div className="flex items-center gap-4">
-                <Link to="/profile" className={`flex items-center gap-2 text-sm font-medium transition-colors hover:text-gold ${isTransparent ? "text-white" : "text-navy dark:text-white"}`}>
-                  <div className="w-8 h-8 rounded-full bg-gold/20 flex items-center justify-center text-gold border border-gold/30">
-                    <User className="w-4 h-4" />
+            {user ? (
+              <div className="ml-2 flex items-center gap-2">
+                {/* <NotificationBadge /> */}
+
+                <Link
+                  to="/profile"
+                  className="group inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-2 text-sm font-medium text-slate-700 transition-all duration-300 hover:-translate-y-[1px] hover:border-gold/30 hover:shadow-md dark:border-white/10 dark:bg-white/5 dark:text-slate-200 dark:hover:bg-white/10"
+                >
+                  <div className="flex h-8 w-8 items-center justify-center rounded-full bg-gold/10 text-gold">
+                    <User className="h-4 w-4" />
                   </div>
-                  <span className="max-w-[100px] truncate">
-                    {user.name.split(" ")[0]}
-                  </span>
+                  <span className="max-w-[120px] truncate">{user.name}</span>
                 </Link>
-                <button onClick={handleLogout} className={`p-2 rounded-full hover:bg-red-50 dark:hover:bg-red-900/20 hover:text-red-600 transition-colors ${isTransparent ? "text-slate-300" : "text-slate-400"}`} aria-label="Logout">
-                  <LogOut className="w-5 h-5" />
+
+                <button
+                  onClick={handleLogout}
+                  className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-slate-200 bg-white text-slate-600 transition-all duration-300 hover:-translate-y-[1px] hover:border-red-300 hover:text-red-500 hover:shadow-md dark:border-white/10 dark:bg-white/5 dark:text-slate-300 dark:hover:bg-red-500/10 dark:hover:text-red-400"
+                  aria-label="Logout"
+                  title="Logout"
+                >
+                  <LogOut className="h-4 w-4" />
                 </button>
-              </div> : <div className="flex items-center gap-4">
-                <Link to="/auth/login" className={`text-sm font-medium transition-colors hover:text-gold ${isTransparent ? "text-white" : "text-navy dark:text-white"}`}>
-                  Login
-                </Link>
-                <Link to="/rooms" className="px-5 py-2.5 bg-gold text-navy text-sm font-bold rounded-lg hover:bg-yellow-500 transition-colors duration-300 shadow-lg shadow-gold/20">
-                  Book Now
-                </Link>
-              </div>}
+              </div>
+            ) : (
+              <Link
+                to="/auth/login"
+                className="ml-2 inline-flex items-center justify-center rounded-full bg-gold px-5 py-2.5 text-sm font-semibold text-black transition-all duration-300 hover:-translate-y-[1px] hover:shadow-lg hover:shadow-gold/20 active:scale-[0.98]"
+              >
+                Login
+              </Link>
+            )}
           </div>
-          {/* Mobile Menu Button */}
-          <div className="md:hidden flex items-center gap-4">
+
+          {/* Mobile */}
+          <div className="md:hidden flex items-center gap-2">
             <ThemeToggle />
-            <button className={`min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg transition-colors ${isTransparent ? "text-white hover:bg-white/10" : "text-navy dark:text-white hover:bg-slate-100 dark:hover:bg-slate-800"}`} onClick={() => setIsOpen(!isOpen)} aria-label="Toggle navigation menu" aria-expanded={isOpen}>
-              {isOpen ? <X className="w-6 h-6" /> : <Menu className="w-6 h-6" />}
+            <button
+              onClick={() => setIsOpen(!isOpen)}
+              className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-slate-200 bg-white/90 text-slate-700 shadow-sm transition hover:scale-[1.03] hover:bg-slate-50 dark:border-white/10 dark:bg-slate-900/80 dark:text-slate-200 dark:hover:bg-slate-800"
+              aria-label="Toggle menu"
+            >
+              {isOpen ? <X className="h-5 w-5" /> : <Menu className="h-5 w-5" />}
             </button>
           </div>
         </div>
       </nav>
 
-      {/* ✅ Mobile menu is portaled outside <nav> */}
       {mobileMenu}
-    </>;
+      {showPhoneModal && (
+        <PhoneModal onClose={() => setShowPhoneModal(false)} />
+      )}
+      <OwnerUpgradeConfirmModal
+        isOpen={isOwnerUpgradeConfirmOpen}
+        isSubmitting={isUpgradingToOwner}
+        onClose={closeOwnerUpgradeConfirm}
+        onConfirm={confirmOwnerUpgrade}
+      />
+    </>
+  );
 }

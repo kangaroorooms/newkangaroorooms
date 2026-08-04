@@ -1,5 +1,5 @@
 import React from 'react';
-import { useAppSelector } from '../src/store/hooks';
+import { useAppSelector } from '../store/hooks';
 import { UpgradePrompt } from './UpgradePrompt';
 interface SubscriptionGateProps {
   feature: 'contact' | 'map';
