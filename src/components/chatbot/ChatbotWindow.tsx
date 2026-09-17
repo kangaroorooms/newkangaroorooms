@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { chatbotFAQs } from "./ChatbotData";
+import { sendChatMessage } from "../../services/chatbot/chatbotApi";
 
 interface ChatbotWindowProps {
   onClose: () => void;
@@ -24,51 +25,146 @@ export default function ChatbotWindow({
     },
   ]);
 
-  const addMessage = (text: string, sender: "bot" | "user") => {
+  // Loading state while waiting for backend response
+  const [isLoading, setIsLoading] = useState(false);
+
+  // Stores the latest Gemini interaction ID
+  // so follow-up questions keep conversation context
+  const [interactionId, setInteractionId] = useState<string | null>(
+    null
+  );
+
+  /**
+   * Add a message to the chat.
+   */
+  const addMessage = (
+    text: string,
+    sender: "bot" | "user"
+  ) => {
     setMessages((previous) => [
       ...previous,
       {
-        id: Date.now(),
+        id: Date.now() + Math.random(),
         sender,
         text,
       },
     ]);
   };
 
-  const handleQuestion = (question: string) => {
-    addMessage(question, "user");
+  /**
+   * Send question to the Gemini File Search backend.
+   */
+  const handleQuestion = async (question: string) => {
+    const trimmedQuestion = question.trim();
 
-    const faq = chatbotFAQs.find((item) => {
-      const normalizedQuestion = question.toLowerCase();
+    if (!trimmedQuestion || isLoading) {
+      return;
+    }
 
-      return (
-        item.question.toLowerCase() === normalizedQuestion ||
-        item.keywords.some((keyword) =>
-          normalizedQuestion.includes(keyword.toLowerCase())
-        )
+    /**
+     * Keep the existing 500 character limit.
+     */
+    if (trimmedQuestion.length > 500) {
+      addMessage(
+        "Please keep your question under 500 characters.",
+        "bot"
       );
-    });
+      return;
+    }
 
-    setTimeout(() => {
-      if (faq) {
-        addMessage(faq.answer, "bot");
-      } else {
-        addMessage(
-          "I don't have an answer for that yet. Please try one of the suggested questions.",
-          "bot"
-        );
-      }
-    }, 300);
+    /**
+     * Display user's message immediately.
+     */
+    addMessage(trimmedQuestion, "user");
+
+    /**
+     * Clear input after sending.
+     */
+    setInput("");
+
+    /**
+     * Show loading state.
+     */
+    setIsLoading(true);
+
+    try {
+      /**
+       * Send message to:
+       *
+       * POST /api/chat
+       *
+       * If this is a follow-up question,
+       * the previous Gemini interaction ID
+       * is also sent.
+       */
+      const response = await sendChatMessage(
+        trimmedQuestion,
+        interactionId
+      );
+
+      /**
+       * Save the new interaction ID.
+       *
+       * This will be used for the next question.
+       */
+      setInteractionId(response.interaction_id);
+
+      /**
+       * Display the answer returned by Gemini.
+       */
+      addMessage(response.answer, "bot");
+
+      /**
+       * Keep sources available for debugging.
+       * We don't display them to the user yet.
+       */
+      console.log("Chatbot response:", response);
+      console.log("Sources:", response.sources);
+    } catch (error) {
+      console.error("Chatbot API error:", error);
+
+      /**
+       * Show a safe error message to the user.
+       */
+      addMessage(
+        "Sorry, I'm having trouble right now. Please try again.",
+        "bot"
+      );
+    } finally {
+      /**
+       * Stop loading state whether
+       * the request succeeds or fails.
+       */
+      setIsLoading(false);
+    }
   };
 
-  const handleSubmit = (event: React.FormEvent) => {
+  /**
+   * Submit from input box.
+   */
+  const handleSubmit = (
+    event: React.FormEvent
+  ) => {
     event.preventDefault();
 
     const question = input.trim();
 
-    if (!question) return;
+    if (!question) {
+      return;
+    }
 
-    setInput("");
+    handleQuestion(question);
+  };
+
+  /**
+   * FAQ button.
+   *
+   * FAQ questions now go directly
+   * to the real Gemini backend.
+   */
+  const handleFAQClick = (
+    question: string
+  ) => {
     handleQuestion(question);
   };
 
@@ -86,40 +182,97 @@ export default function ChatbotWindow({
       "
     >
       {/* Header */}
-      <div className="flex items-center justify-between bg-slate-900 px-4 py-4 text-white dark:bg-slate-800">
+
+      <div
+        className="
+          flex items-center justify-between
+          bg-slate-900
+          px-4 py-4
+          text-white
+          dark:bg-slate-800
+        "
+      >
         <div>
-          <h2 className="font-semibold">Homilivo Assistant</h2>
-          <p className="text-xs text-slate-300">
-            How can we help?
-          </p>
+          <h2 className="font-semibold">
+            Homilivo Assistant
+          </h2>
+
+          <div className="mt-1">
+            <p className="text-xs text-slate-300">
+              AI Assistant
+            </p>
+          </div>
         </div>
 
         <button
           onClick={onClose}
           aria-label="Close chatbot"
-          className="text-xl"
+          className="
+            text-xl
+            text-slate-300
+            transition
+            hover:text-white
+          "
         >
           ×
         </button>
       </div>
 
       {/* Messages */}
+
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
         {messages.map((message) => (
           <div
             key={message.id}
             className={
               message.sender === "user"
-                ? "ml-auto max-w-[80%] rounded-xl bg-slate-900 px-3 py-2 text-sm text-white"
-                : "max-w-[80%] rounded-xl bg-slate-100 px-3 py-2 text-sm text-slate-800 dark:bg-slate-800 dark:text-slate-100"
+                ? `
+                  ml-auto
+                  max-w-[80%]
+                  rounded-xl
+                  bg-slate-900
+                  px-3 py-2
+                  text-sm
+                  text-white
+                `
+                : `
+                  max-w-[80%]
+                  rounded-xl
+                  bg-slate-100
+                  px-3 py-2
+                  text-sm
+                  text-slate-800
+                  dark:bg-slate-800
+                  dark:text-slate-100
+                `
             }
           >
             {message.text}
           </div>
         ))}
+
+        {/* Loading / Typing indicator */}
+
+        {isLoading && (
+          <div
+            className="
+              max-w-[80%]
+              rounded-xl
+              bg-slate-100
+              px-3 py-2
+              text-sm
+              text-slate-500
+              dark:bg-slate-800
+              dark:text-slate-300
+            "
+          >
+            Assistant is typing...
+          </div>
+        )}
       </div>
 
-      {/* Suggested questions */}
+      {/* Suggested Questions */}
+
       <div className="border-t p-3 dark:border-slate-700">
         <p className="mb-2 text-xs text-slate-500">
           Popular questions
@@ -129,11 +282,20 @@ export default function ChatbotWindow({
           {chatbotFAQs.map((faq) => (
             <button
               key={faq.id}
-              onClick={() => handleQuestion(faq.question)}
+              onClick={() =>
+                handleFAQClick(faq.question)
+              }
+              disabled={isLoading}
               className="
-                whitespace-nowrap rounded-full
-                border px-3 py-2 text-xs
+                whitespace-nowrap
+                rounded-full
+                border
+                px-3 py-2
+                text-xs
+                transition
                 hover:bg-slate-100
+                disabled:cursor-not-allowed
+                disabled:opacity-50
                 dark:border-slate-600
                 dark:hover:bg-slate-800
               "
@@ -145,19 +307,40 @@ export default function ChatbotWindow({
       </div>
 
       {/* Input */}
+
       <form
         onSubmit={handleSubmit}
-        className="flex gap-2 border-t p-3 dark:border-slate-700"
+        className="
+          flex gap-2
+          border-t
+          p-3
+          dark:border-slate-700
+        "
       >
         <input
           value={input}
-          onChange={(event) => setInput(event.target.value)}
-          placeholder="Ask a question..."
+          onChange={(event) =>
+            setInput(event.target.value)
+          }
+          maxLength={500}
+          placeholder={
+            isLoading
+              ? "Assistant is thinking..."
+              : "Ask a question..."
+          }
+          disabled={isLoading}
           className="
-            min-w-0 flex-1 rounded-lg
-            border px-3 py-2 text-sm
+            min-w-0
+            flex-1
+            rounded-lg
+            border
+            px-3 py-2
+            text-sm
             outline-none
-            focus:ring-2 focus:ring-slate-400
+            focus:ring-2
+            focus:ring-slate-400
+            disabled:cursor-not-allowed
+            disabled:opacity-60
             dark:border-slate-600
             dark:bg-slate-800
           "
@@ -165,10 +348,18 @@ export default function ChatbotWindow({
 
         <button
           type="submit"
+          disabled={!input.trim() || isLoading}
           className="
-            rounded-lg bg-slate-900
-            px-4 py-2 text-white
-            dark:bg-white dark:text-slate-900
+            rounded-lg
+            bg-slate-900
+            px-4 py-2
+            text-white
+            transition
+            hover:bg-slate-700
+            disabled:cursor-not-allowed
+            disabled:opacity-50
+            dark:bg-white
+            dark:text-slate-900
           "
         >
           →
@@ -177,3 +368,4 @@ export default function ChatbotWindow({
     </div>
   );
 }
+
