@@ -1,4 +1,5 @@
 import React, { useEffect, Suspense, lazy } from "react";
+import Chatbot from "./components/chatbot/Chatbot";
 import {
   BrowserRouter,
   Routes,
@@ -305,15 +306,18 @@ function AppContent() {
   </header>
 )}
 
-      {/* ✅ Global UI Overlays */}
-      {toast && (
-        <Toast
-          message={toast.message}
-          type={toast.type}
-          onClose={() => dispatch(hideToast())}
-        />
-      )}
-      <PhoneOtpModal />
+      {/* Global UI Overlays */}
+{toast && (
+  <Toast
+    message={toast.message}
+    type={toast.type}
+    onClose={() => dispatch(hideToast())}
+  />
+)}
+
+<PhoneOtpModal />
+
+<Chatbot />
 
       {/* ✅ Main Content - starts right after header, no padding needed */}
       <main className="flex-1 flex flex-col">
