@@ -1,6 +1,13 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { chatbotFAQs } from "./ChatbotData";
-import { sendChatMessage } from "../../services/chatbot/chatbotApi";
+import {
+  chatbotWebSocket,
+  type ChatbotDoneResponse,
+  type WebSocketStatus,
+} from "../../services/chatbot/chatbotWebSocket";
+
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface ChatbotWindowProps {
   onClose: () => void;
@@ -10,6 +17,7 @@ interface Message {
   id: number;
   sender: "bot" | "user";
   text: string;
+  streaming?: boolean;
 }
 
 export default function ChatbotWindow({
@@ -25,17 +33,106 @@ export default function ChatbotWindow({
     },
   ]);
 
-  // Loading state while waiting for backend response
   const [isLoading, setIsLoading] = useState(false);
+  const [wsStatus, setWsStatus] =
+    useState<WebSocketStatus>("disconnected");
 
-  // Stores the latest Gemini interaction ID
-  // so follow-up questions keep conversation context
-  const [interactionId, setInteractionId] = useState<string | null>(
-    null
-  );
+  // Keeps track of the currently streaming bot message.
+  const streamingMessageId = useRef<number | null>(null);
 
-  /**
-   * Add a message to the chat.
+  /*
+   * Register WebSocket callbacks and connect when
+   * the chatbot window is opened.
+   */
+  useEffect(() => {
+    chatbotWebSocket.setCallbacks({
+      onStatusChange: (status) => {
+        setWsStatus(status);
+
+        if (status === "error" || status === "disconnected") {
+          setIsLoading(false);
+        }
+      },
+
+      onToken: (text) => {
+        const messageId = streamingMessageId.current;
+
+        if (!messageId) {
+          return;
+        }
+
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === messageId
+              ? {
+                ...message,
+                text: message.text + text,
+              }
+              : message
+          )
+        );
+      },
+
+      onDone: (data: ChatbotDoneResponse) => {
+        const messageId = streamingMessageId.current;
+
+        setIsLoading(false);
+        streamingMessageId.current = null;
+
+        if (!messageId) {
+          addMessage(data.message, "bot");
+          return;
+        }
+
+        /*
+         * The backend's done.message is the
+         * authoritative final response.
+         */
+        setMessages((previous) =>
+          previous.map((message) =>
+            message.id === messageId
+              ? {
+                ...message,
+                text: data.message,
+                streaming: false,
+              }
+              : message
+          )
+        );
+
+        console.log("Chatbot response:", data);
+        console.log("Rooms:", data.rooms);
+        console.log("Selected room:", data.selected_room);
+        console.log("Sources:", data.sources);
+      },
+
+      onServerError: (detail) => {
+        setIsLoading(false);
+        streamingMessageId.current = null;
+
+        addMessage(
+          detail || "Sorry, something went wrong. Please try again.",
+          "bot"
+        );
+      },
+
+      onError: (error) => {
+        console.error("Chatbot WebSocket error:", error);
+        setIsLoading(false);
+      },
+    });
+
+    chatbotWebSocket.connect();
+
+    return () => {
+      chatbotWebSocket.disconnect();
+      chatbotWebSocket.clearSession();
+      streamingMessageId.current = null;
+    };
+  }, []);
+
+  /*
+   * Add a normal chat message.
    */
   const addMessage = (
     text: string,
@@ -51,18 +148,18 @@ export default function ChatbotWindow({
     ]);
   };
 
-  /**
-   * Send question to the Gemini File Search backend.
+  /*
+   * Send a message through the MCP WebSocket backend.
    */
-  const handleQuestion = async (question: string) => {
+  const handleQuestion = (question: string) => {
     const trimmedQuestion = question.trim();
 
     if (!trimmedQuestion || isLoading) {
       return;
     }
 
-    /**
-     * Keep the existing 500 character limit.
+    /*
+     * Backend contract allows 1-500 characters.
      */
     if (trimmedQuestion.length > 500) {
       addMessage(
@@ -72,99 +169,79 @@ export default function ChatbotWindow({
       return;
     }
 
-    /**
+    /*
+     * WebSocket must be connected before sending.
+     */
+    if (!chatbotWebSocket.isConnected()) {
+      addMessage(
+        "I'm still connecting. Please try again in a moment.",
+        "bot"
+      );
+      return;
+    }
+
+    /*
      * Display user's message immediately.
      */
     addMessage(trimmedQuestion, "user");
 
-    /**
-     * Clear input after sending.
-     */
     setInput("");
-
-    /**
-     * Show loading state.
-     */
     setIsLoading(true);
 
-    try {
-      /**
-       * Send message to:
-       *
-       * POST /api/chat
-       *
-       * If this is a follow-up question,
-       * the previous Gemini interaction ID
-       * is also sent.
-       */
-      const response = await sendChatMessage(
-        trimmedQuestion,
-        interactionId
+    /*
+     * Create one empty bot message.
+     * Incoming WebSocket tokens will be appended to it.
+     */
+    const botMessageId = Date.now() + Math.random();
+
+    streamingMessageId.current = botMessageId;
+
+    setMessages((previous) => [
+      ...previous,
+      {
+        id: botMessageId,
+        sender: "bot",
+        text: "",
+        streaming: true,
+      },
+    ]);
+
+    const sent = chatbotWebSocket.sendMessage(
+      trimmedQuestion
+    );
+
+    if (!sent) {
+      setIsLoading(false);
+      streamingMessageId.current = null;
+
+      setMessages((previous) =>
+        previous.filter(
+          (message) => message.id !== botMessageId
+        )
       );
 
-      /**
-       * Save the new interaction ID.
-       *
-       * This will be used for the next question.
-       */
-      setInteractionId(response.interaction_id);
-
-      /**
-       * Display the answer returned by Gemini.
-       */
-      addMessage(response.answer, "bot");
-
-      /**
-       * Keep sources available for debugging.
-       * We don't display them to the user yet.
-       */
-      console.log("Chatbot response:", response);
-      console.log("Sources:", response.sources);
-    } catch (error) {
-      console.error("Chatbot API error:", error);
-
-      /**
-       * Show a safe error message to the user.
-       */
       addMessage(
-        "Sorry, I'm having trouble right now. Please try again.",
+        "Sorry, I couldn't send your message. Please try again.",
         "bot"
       );
-    } finally {
-      /**
-       * Stop loading state whether
-       * the request succeeds or fails.
-       */
-      setIsLoading(false);
     }
   };
 
-  /**
+  /*
    * Submit from input box.
    */
   const handleSubmit = (
-    event: React.FormEvent
+    event: React.FormEvent<HTMLFormElement>
   ) => {
     event.preventDefault();
 
-    const question = input.trim();
-
-    if (!question) {
-      return;
-    }
-
-    handleQuestion(question);
+    handleQuestion(input);
   };
 
-  /**
-   * FAQ button.
-   *
-   * FAQ questions now go directly
-   * to the real Gemini backend.
+  /*
+   * FAQ buttons use the same WebSocket flow.
    */
-  const handleFAQClick = (
-    question: string
-  ) => {
+  const handleFAQClick = (question: string) => {
     handleQuestion(question);
   };
 
@@ -182,7 +259,6 @@ export default function ChatbotWindow({
       "
     >
       {/* Header */}
-
       <div
         className="
           flex items-center justify-between
@@ -197,9 +273,22 @@ export default function ChatbotWindow({
             Homilivo Assistant
           </h2>
 
-          <div className="mt-1">
+          <div className="mt-1 flex items-center gap-2">
+            <span
+              className={`h-2 w-2 rounded-full ${wsStatus === "connected"
+                  ? "bg-green-400"
+                  : wsStatus === "connecting"
+                    ? "bg-yellow-400"
+                    : "bg-red-400"
+                }`}
+            />
+
             <p className="text-xs text-slate-300">
-              AI Assistant
+              {wsStatus === "connected"
+                ? "AI Assistant"
+                : wsStatus === "connecting"
+                  ? "Connecting..."
+                  : "Offline"}
             </p>
           </div>
         </div>
@@ -219,7 +308,6 @@ export default function ChatbotWindow({
       </div>
 
       {/* Messages */}
-
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
         {messages.map((message) => (
           <div
@@ -247,12 +335,79 @@ export default function ChatbotWindow({
                 `
             }
           >
-            {message.text}
+            {message.text ? (
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  p: ({ children }) => (
+                    <p className="mb-2 last:mb-0">{children}</p>
+                  ),
+
+                  strong: ({ children }) => (
+                    <strong className="font-semibold">{children}</strong>
+                  ),
+
+                  ul: ({ children }) => (
+                    <ul className="mb-2 list-disc space-y-1 pl-5">
+                      {children}
+                    </ul>
+                  ),
+
+                  ol: ({ children }) => (
+                    <ol className="mb-2 list-decimal space-y-1 pl-5">
+                      {children}
+                    </ol>
+                  ),
+
+                  li: ({ children }) => (
+                    <li>{children}</li>
+                  ),
+
+                  h1: ({ children }) => (
+                    <h1 className="mb-2 text-lg font-semibold">
+                      {children}
+                    </h1>
+                  ),
+
+                  h2: ({ children }) => (
+                    <h2 className="mb-2 text-base font-semibold">
+                      {children}
+                    </h2>
+                  ),
+
+                  h3: ({ children }) => (
+                    <h3 className="mb-1 text-sm font-semibold">
+                      {children}
+                    </h3>
+                  ),
+
+                  a: ({ href, children }) => (
+                    <a
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="underline"
+                    >
+                      {children}
+                    </a>
+                  ),
+
+                  code: ({ children }) => (
+                    <code className="rounded bg-slate-200 px-1 py-0.5 text-xs dark:bg-slate-700">
+                      {children}
+                    </code>
+                  ),
+                }}
+              >
+                {message.text}
+              </ReactMarkdown>
+            ) : message.streaming ? (
+              "..."
+            ) : null}
           </div>
         ))}
 
-        {/* Loading / Typing indicator */}
-
+        {/* Typing indicator */}
         {isLoading && (
           <div
             className="
@@ -272,7 +427,6 @@ export default function ChatbotWindow({
       </div>
 
       {/* Suggested Questions */}
-
       <div className="border-t p-3 dark:border-slate-700">
         <p className="mb-2 text-xs text-slate-500">
           Popular questions
@@ -285,7 +439,10 @@ export default function ChatbotWindow({
               onClick={() =>
                 handleFAQClick(faq.question)
               }
-              disabled={isLoading}
+              disabled={
+                isLoading ||
+                wsStatus !== "connected"
+              }
               className="
                 whitespace-nowrap
                 rounded-full
@@ -307,7 +464,6 @@ export default function ChatbotWindow({
       </div>
 
       {/* Input */}
-
       <form
         onSubmit={handleSubmit}
         className="
@@ -324,11 +480,16 @@ export default function ChatbotWindow({
           }
           maxLength={500}
           placeholder={
-            isLoading
-              ? "Assistant is thinking..."
-              : "Ask a question..."
+            wsStatus !== "connected"
+              ? "Connecting..."
+              : isLoading
+                ? "Assistant is thinking..."
+                : "Ask a question..."
           }
-          disabled={isLoading}
+          disabled={
+            isLoading ||
+            wsStatus !== "connected"
+          }
           className="
             min-w-0
             flex-1
@@ -348,7 +509,11 @@ export default function ChatbotWindow({
 
         <button
           type="submit"
-          disabled={!input.trim() || isLoading}
+          disabled={
+            !input.trim() ||
+            isLoading ||
+            wsStatus !== "connected"
+          }
           className="
             rounded-lg
             bg-slate-900
