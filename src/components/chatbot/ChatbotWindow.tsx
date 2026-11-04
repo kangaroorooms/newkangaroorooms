@@ -6,6 +6,9 @@ import {
   type WebSocketStatus,
 } from "../../services/chatbot/chatbotWebSocket";
 
+import { parsePlansReply } from "./plansReply";
+import { buildPricingUrl } from "./plansConfig";
+
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -309,7 +312,13 @@ export default function ChatbotWindow({
 
       {/* Messages */}
       <div className="flex-1 space-y-3 overflow-y-auto p-4">
-        {messages.map((message) => (
+        {messages.map((message) => {
+          const plans =
+            message.sender === "bot" && !message.streaming
+              ? parsePlansReply(message.text)
+              : null;
+
+          return (
           <div
             key={message.id}
             className={
@@ -404,8 +413,42 @@ export default function ChatbotWindow({
             ) : message.streaming ? (
               "..."
             ) : null}
+
+            {plans?.isPlansReply && (
+              <button
+                type="button"
+                aria-label="View subscription plans"
+                onClick={() =>
+                  window.open(
+                    buildPricingUrl(plans.city),
+                    "_blank",
+                    "noopener,noreferrer"
+                  )
+                }
+                className="
+                  mt-2
+                  max-w-full
+                  rounded-lg
+                  bg-slate-900
+                  px-3 py-2
+                  text-center text-sm
+                  text-white
+                  transition
+                  hover:bg-slate-700
+                  focus:outline-none
+                  focus-visible:ring-2
+                  focus-visible:ring-slate-400
+                  focus-visible:ring-offset-2
+                  dark:bg-white
+                  dark:text-slate-900
+                "
+              >
+                View plans
+              </button>
+            )}
           </div>
-        ))}
+          );
+        })}
 
         {/* Typing indicator */}
         {isLoading && (
